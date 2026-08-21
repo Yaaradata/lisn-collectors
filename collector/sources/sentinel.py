@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 import os
 
-import httpx
-
 from collector.contract import Page, RawResponse, Record
+from collector.http import get_client
 
 
 def _flatten_dotted(row: dict) -> dict:
@@ -54,9 +53,12 @@ class SentinelCollector:
     def fetch(self, page: Page) -> RawResponse:
         # Return the bytes EXACTLY as received. They are written to GCS unmodified
         # — that raw object is our evidence of what the source returned.
+        # get_client is shared rather than per-source: every source that talks to
+        # a Cloud Run service needs the same ID-token behaviour.
         base = os.environ["SENTINEL_URL"].rstrip("/")
         url = f"{base}/v1/incidents/search"
-        response = httpx.post(url, json=page.payload, timeout=30.0)
+        with get_client(base) as client:
+            response = client.post(url, json=page.payload, timeout=30.0)
         response.raise_for_status()
         content_type = response.headers.get("content-type", "application/json")
         return RawResponse(body=response.content, content_type=content_type)

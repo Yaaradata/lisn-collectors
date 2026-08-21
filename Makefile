@@ -1,4 +1,4 @@
-.PHONY: preflight database storage iam registry smoke all trace clean mock-schema mock-schema-verify seed seed-verify mock-run mock-test image deploy-mock collector-schema collector-schema-verify procrastinate-schema-read procrastinate-schema-apply procrastinate-verify test-source test-raw worker api bigquery e2e
+.PHONY: preflight database storage iam registry smoke all trace clean mock-schema mock-schema-verify seed seed-verify mock-run mock-test image deploy-mock collector-schema collector-schema-verify procrastinate-schema-read procrastinate-schema-apply procrastinate-verify test-source test-raw worker api bigquery e2e sweeper sweep-now pause resume drain ks-status failure-demos demo trace-s4 deploy-preflight grant-invoker deploy-services deploy-workers workers-start workers-stop workers-status workers-logs workers-scale e2e-cloud measure-rate demo-cloud trace-s5
 
 preflight:
 	@bash scripts/00_preflight.sh
@@ -42,10 +42,37 @@ mock-test:
 	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; if [[ -x .venv/Scripts/python.exe ]]; then PY=.venv/Scripts/python.exe; elif [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python3; fi; "$$PY" -m pytest tests/test_mock_sentinel.py -v'
 
 image:
-	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; source scripts/_common.sh; need gcloud; : "$${IMG:?IMG required}"; gcloud builds submit --tag "$$IMG" --project "$$PROJECT"; ok "Pushed $$IMG"'
+	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; source scripts/_common.sh; need gcloud; : "$${IMG:?IMG required}"; echo "Building $${IMG} (one image, no default CMD — mock/API/workers all use it)"; gcloud builds submit --tag "$$IMG" --project "$$PROJECT"; DIGEST=$$(gcloud artifacts docker images describe "$$IMG" --project="$$PROJECT" --format="value(image_summary.digest)" 2>/dev/null || true); ok "Pushed $$IMG"; echo "digest=$${DIGEST:-<unknown>}"'
 
 deploy-mock:
 	@bash scripts/07_deploy_mock.sh
+
+deploy-services:
+	@bash scripts/26_deploy_services.sh
+
+deploy-workers:
+	@bash scripts/27_deploy_workers.sh
+
+workers-start:
+	@bash scripts/28_workers_control.sh start $(SOURCE)
+
+workers-stop:
+	@bash scripts/28_workers_control.sh stop $(SOURCE)
+
+workers-status:
+	@bash scripts/28_workers_control.sh status
+
+workers-logs:
+	@bash scripts/28_workers_control.sh logs $(SOURCE) $(N)
+
+workers-scale:
+	@bash scripts/28_workers_control.sh scale $(SOURCE) $(N)
+
+e2e-cloud:
+	@bash scripts/29_e2e_cloud.sh
+
+measure-rate:
+	@bash scripts/30_measure_rate.sh
 
 collector-schema:
 	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; if [[ -z "$${COLLECTOR_DSN:-}" ]]; then echo "COLLECTOR_DSN missing — run scripts/05_smoke.sh (or set local DSN) first"; exit 1; fi; psql "$$COLLECTOR_DSN" -v ON_ERROR_STOP=1 -f sql/001_collector.sql; echo "Applied sql/001_collector.sql to collector"'
@@ -80,6 +107,18 @@ test-raw:
 worker:
 	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; export PYTHONPATH=.; export PROCRASTINATE_APP=collector.app.app; if [[ -x .venv/Scripts/python.exe ]]; then PY=.venv/Scripts/python.exe; elif [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python3; fi; "$$PY" -m procrastinate worker -q sentinel -c 1 --delete-jobs never'
 
+# Maintenance queue only — runs the periodic sweep and sweep_now. Does not
+# pull sentinel fetch_page jobs (those stay on `make worker`).
+# Procrastinate 3.9 requires --delete-jobs values in LOWERCASE (never,
+# successful, always).
+sweeper:
+	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; export PYTHONPATH=.; export PROCRASTINATE_APP=collector.app.app; if [[ -x .venv/Scripts/python.exe ]]; then PY=.venv/Scripts/python.exe; elif [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python3; fi; "$$PY" -m procrastinate worker -q maintenance -c 1 --delete-jobs never'
+
+# Waiting two minutes for the cron tick in front of an audience is bad demo pacing.
+# Invokes the sweep body directly (does not wait for a worker / cron tick).
+sweep-now:
+	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; export PYTHONPATH=.; export PROCRASTINATE_APP=collector.app.app; if [[ -x .venv/Scripts/python.exe ]]; then PY=.venv/Scripts/python.exe; elif [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python3; fi; "$$PY" scripts/sweep_now.py'
+
 api:
 	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; export PYTHONPATH=.; if [[ -x .venv/Scripts/python.exe ]]; then PY=.venv/Scripts/python.exe; elif [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python3; fi; "$$PY" -m uvicorn collector.api:api --port 8080 --reload'
 
@@ -88,6 +127,40 @@ bigquery:
 
 e2e:
 	@bash scripts/09_e2e.sh
+
+# Killswitch — SOURCE=sentinel (required for pause/resume/drain).
+pause:
+	@bash scripts/11_killswitch.sh pause "$(SOURCE)"
+
+resume:
+	@bash scripts/11_killswitch.sh resume "$(SOURCE)"
+
+drain:
+	@bash scripts/11_killswitch.sh drain "$(SOURCE)"
+
+ks-status:
+	@bash scripts/11_killswitch.sh status
+
+failure-demos:
+	@bash scripts/12_failures.sh
+
+demo:
+	@bash scripts/10_demo.sh
+
+demo-cloud:
+	@bash scripts/31_demo_cloud.sh
+
+trace-s4:
+	@bash scripts/13_trace_s4.sh
+
+trace-s5:
+	@bash scripts/32_trace_s5.sh
+
+deploy-preflight:
+	@bash scripts/23_deploy_preflight.sh
+
+grant-invoker:
+	@bash scripts/24_grant_invoker.sh
 
 clean:
 	@echo "[clean] non-destructive cleanup"

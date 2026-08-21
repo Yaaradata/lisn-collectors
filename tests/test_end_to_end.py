@@ -8,6 +8,10 @@ Preconditions (started by scripts/09_e2e.sh, or manually):
   - SENTINEL_URL pointing at the local mock (not Cloud Run ingress)
 
 These tests are the Sprint 3 exit criteria expressed as code.
+
+The same test file must pass locally and against Cloud Run. If a test needs
+different assertions for the deployed stack, that is a signal the deployment
+changed behaviour, and it should be investigated rather than accommodated.
 """
 
 from __future__ import annotations
@@ -21,7 +25,8 @@ import psycopg
 import pytest
 from google.cloud import bigquery, storage
 
-API_URL = os.environ.get("COLLECTOR_API_URL", "http://127.0.0.1:8080")
+# Same file locally and on Cloud Run — only the base URL / token change.
+API_URL = os.environ.get("COLLECTOR_API_URL", "http://localhost:8080")
 MOCK_URL = os.environ.get("MOCK_SENTINEL_URL", "http://127.0.0.1:8081")
 POLL_TIMEOUT_S = 180
 POLL_INTERVAL_S = 2.0
@@ -44,16 +49,29 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 
+def _auth_headers() -> dict[str, str]:
+    token = os.environ.get("COLLECTOR_API_TOKEN", "").strip()
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
+
 @pytest.fixture(scope="module")
 def api() -> httpx.Client:
-    with httpx.Client(base_url=API_URL, timeout=60.0) as client:
+    with httpx.Client(
+        base_url=API_URL, timeout=60.0, headers=_auth_headers()
+    ) as client:
         try:
             r = client.get("/health")
             r.raise_for_status()
         except Exception as exc:  # noqa: BLE001
             pytest.fail(f"API not healthy at {API_URL}: {exc}")
         try:
-            httpx.get(f"{MOCK_URL}/health", timeout=10.0).raise_for_status()
+            httpx.get(
+                f"{MOCK_URL}/health",
+                headers=_auth_headers(),
+                timeout=10.0,
+            ).raise_for_status()
         except Exception as exc:  # noqa: BLE001
             pytest.fail(f"Mock not healthy at {MOCK_URL}: {exc}")
         yield client

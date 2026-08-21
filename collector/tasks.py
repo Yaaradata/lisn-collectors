@@ -1,11 +1,17 @@
-"""Procrastinate task body: fetch one collector_job page end-to-end."""
+"""Procrastinate task body: fetch one collector_job page end-to-end.
+
+Also hosts the Sprint 4 sweeper that recovers stranded Procrastinate jobs
+(Layer A) and expired collector_job leases (Layer B).
+"""
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 
 import procrastinate
+from psycopg import errors as pg_errors
 
 from collector.app import app
 from collector.contract import Page
@@ -14,13 +20,15 @@ from collector.load import append_records
 from collector.raw import write_raw
 from collector.sources import get
 
+logger = logging.getLogger(__name__)
+
 
 @app.task(
     queue="sentinel",
     name="fetch_page",
     retry=procrastinate.RetryStrategy(max_attempts=3, exponential_wait=4),
 )
-def fetch_page(job_id: str, worker_id: str = "w") -> None:
+def fetch_page(job_id: str, worker_id: str = app.WORKER_ID) -> None:
     # Procrastinate carries a pointer, not a payload. The page payload lives in
     # our collector_job row, so our table stays the source of truth and
     # Procrastinate's schema stays an implementation detail.
@@ -49,6 +57,45 @@ def fetch_page(job_id: str, worker_id: str = "w") -> None:
                     status,
                 ) = row
                 if status in ("done", "dead"):
+                    return
+
+                # Killswitch: if this source is paused, put the row back to
+                # pending and leave without calling the source. The job returns
+                # to the queue rather than failing, so nothing is lost and work
+                # resumes the moment the flag clears.
+                control = None
+                try:
+                    cur.execute(
+                        """
+                        SELECT paused
+                        FROM collector_control
+                        WHERE source = %s
+                        """,
+                        (source_name,),
+                    )
+                    control = cur.fetchone()
+                except pg_errors.UndefinedTable:
+                    # Table is created by scripts/11_killswitch.sh on first use.
+                    conn.rollback()
+
+                if control is not None and control[0]:
+                    cur.execute(
+                        """
+                        UPDATE collector_job
+                        SET status = 'pending',
+                            owner = NULL,
+                            lease_expires_at = NULL,
+                            updated_at = now()
+                        WHERE job_id = %s::uuid
+                        """,
+                        (job_id,),
+                    )
+                    conn.commit()
+                    # Re-defer so a Procrastinate worker picks it up again after
+                    # the flag clears (returning success would finish the job).
+                    fetch_page.configure(schedule_in={"seconds": 15}).defer(
+                        job_id=job_id
+                    )
                     return
 
                 src = get(source_name)
@@ -173,3 +220,103 @@ def fetch_page(job_id: str, worker_id: str = "w") -> None:
                 )
             conn.commit()
         raise
+
+
+async def _run_sweep() -> dict[str, int]:
+    """Recover stranded Procrastinate jobs (A) and expired collector_job leases (B)."""
+    # --- LAYER A — Procrastinate stalls ---------------------------------
+    # get BEFORE prune. get_stalled_jobs identifies jobs by joining to worker
+    # heartbeats, so pruning first deletes the worker rows and makes those jobs
+    # invisible to the query — leaving them at status='doing' with worker_id IS NULL
+    # and no heartbeat-based way to find them.
+    stalled = list(
+        await app.job_manager.get_stalled_jobs(seconds_since_heartbeat=60)
+    )
+    # retry_job moves the job from doing back to todo so any healthy worker
+    # picks it up. It does not create a new job and it preserves attempts.
+    for job in stalled:
+        await app.job_manager.retry_job(job)
+    pruned = await app.job_manager.prune_stalled_workers(seconds_since_heartbeat=60)
+
+    # --- LAYER B — our collector_job leases -----------------------------
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE collector_job
+                SET status = 'pending',
+                    owner = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = now()
+                WHERE status = 'in_progress'
+                  AND lease_expires_at < now()
+                  AND attempts < 5
+                RETURNING job_id::text, source
+                """
+            )
+            requeued = cur.fetchall()
+
+            cur.execute(
+                """
+                UPDATE collector_job
+                SET status = 'dead',
+                    updated_at = now()
+                WHERE status = 'in_progress'
+                  AND lease_expires_at < now()
+                  AND attempts >= 5
+                """
+            )
+            dead_lettered = cur.rowcount
+
+            # THE DOUBLE-RECOVERY TRAP: if Layer A already retried the job, it
+            # will re-run fetch_page(job_id) on its own. Deferring another would
+            # put two workers on the same page — one wasted call against our
+            # Sentinel rate ceiling. The task body is idempotent so nothing
+            # corrupts, but a wasted call is still a wasted call.
+            to_defer: list[str] = []
+            redefers_skipped = 0
+            for job_id, _source in requeued:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM procrastinate_jobs
+                    WHERE args->>'job_id' = %s
+                      AND status IN ('todo', 'doing')
+                    LIMIT 1
+                    """,
+                    (job_id,),
+                )
+                if cur.fetchone() is not None:
+                    redefers_skipped += 1
+                else:
+                    to_defer.append(job_id)
+        conn.commit()
+
+    for job_id in to_defer:
+        await fetch_page.defer_async(job_id=job_id)
+
+    result = {
+        "stalled_jobs_retried": len(stalled),
+        "workers_pruned": len(pruned),
+        "rows_requeued": len(requeued),
+        "rows_dead_lettered": dead_lettered,
+        "redefers_skipped": redefers_skipped,
+    }
+    if any(result.values()):
+        logger.info("sweep %s", result)
+    return result
+
+
+@app.periodic(cron="*/2 * * * *")
+@app.task(queue="maintenance", name="sweep")
+async def sweep(timestamp: int) -> dict[str, int]:
+    # timestamp is REQUIRED by @app.periodic (cron tick epoch seconds).
+    _ = timestamp
+    return await _run_sweep()
+
+
+# Waiting two minutes for the cron tick in front of an audience is bad demo pacing.
+@app.task(queue="maintenance", name="sweep_now")
+async def sweep_now() -> dict[str, int]:
+    """Manual trigger for demos — same body as the periodic sweep."""
+    return await _run_sweep()

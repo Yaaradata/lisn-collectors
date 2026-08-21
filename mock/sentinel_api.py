@@ -26,6 +26,10 @@ from mock.reference import MAX_IDS_PER_CALL
 # process restart clears injected faults.
 _FAULTS: set[str] = set()
 
+# Request counter for Sprint 5 rate measurement (scripts/30_measure_rate.sh).
+# In-memory on purpose — one mock instance; a rolling deploy briefly doubles it.
+_REQUESTS: int = 0
+
 
 def _load_dotenv() -> None:
     env_path = Path(".env")
@@ -175,6 +179,9 @@ def health(request: Request) -> dict[str, Any]:
 
 @app.post("/v1/incidents/search")
 def search_incidents(body: SearchRequest, request: Request) -> dict[str, Any]:
+    global _REQUESTS
+    _REQUESTS += 1
+
     incident_ids = list(body.incident_ids or [])
     order_ids = list(body.order_ids or [])
 
@@ -237,3 +244,15 @@ def clear_faults() -> dict[str, Any]:
 @app.get("/admin/fault")
 def list_faults() -> dict[str, Any]:
     return {"faults": sorted(_FAULTS)}
+
+
+@app.get("/admin/stats")
+def get_stats() -> dict[str, Any]:
+    return {"requests": _REQUESTS}
+
+
+@app.delete("/admin/stats")
+def reset_stats() -> dict[str, Any]:
+    global _REQUESTS
+    _REQUESTS = 0
+    return {"requests": _REQUESTS}
