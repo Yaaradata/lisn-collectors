@@ -5,16 +5,27 @@
   "terminals": [
     {
       "name": "mock-sentinel",
-      "command": "bash .cursor/start.sh; set -a; source .env; set +a; export PYTHONPATH=\"$PWD\"; until pg_isready -h 127.0.0.1 -p 5432 -q; do sleep 1; done; exec .venv/bin/python -m uvicorn mock.sentinel_api:app --host 127.0.0.1 --port 8081"
+      "description": "Fake Flipkart Sentinel export service on :8081. Fault injection at POST /admin/fault/{id}, call counter at GET /admin/stats.",
+      "command": "set -a; source .env; set +a; export PYTHONPATH=\"$PWD\"; until pg_isready -h 127.0.0.1 -p 5432 -q; do sleep 1; done; exec .venv/bin/python -m uvicorn mock.sentinel_api:app --host 127.0.0.1 --port 8081"
     },
     {
       "name": "collector-api",
+      "description": "Request API LiSN calls on :8080. POST /v1/collect, GET /v1/reconcile, /v1/dead-letter, /v1/health/detail.",
       "command": "set -a; source .env; set +a; export PYTHONPATH=\"$PWD\"; until pg_isready -h 127.0.0.1 -p 5432 -q; do sleep 1; done; exec .venv/bin/python -m uvicorn collector.api:api --host 127.0.0.1 --port 8080"
     },
     {
       "name": "sentinel-worker",
+      "description": "Procrastinate worker on the sentinel queue. -c 1 is load-bearing: one worker equals one connection to the source, which is what the rate arithmetic assumes.",
       "command": "set -a; source .env; set +a; export PYTHONPATH=\"$PWD\"; export PROCRASTINATE_APP=collector.app.app; until pg_isready -h 127.0.0.1 -p 5432 -q; do sleep 1; done; exec .venv/bin/python -m procrastinate worker -q sentinel -c 1 --delete-jobs never"
+    },
+    {
+      "name": "maintenance-worker",
+      "description": "Runs the periodic sweep (cron */2) and sweep_now. Required for any recovery or lease-expiry test.",
+      "command": "set -a; source .env; set +a; export PYTHONPATH=\"$PWD\"; export PROCRASTINATE_APP=collector.app.app; until pg_isready -h 127.0.0.1 -p 5432 -q; do sleep 1; done; exec .venv/bin/python -m procrastinate worker -q maintenance -c 1 --delete-jobs never"
     }
   ],
-  "ports": [8080, 8081]
+  "ports": [
+    { "name": "collector-api", "port": 8080 },
+    { "name": "mock-sentinel", "port": 8081 }
+  ]
 }
