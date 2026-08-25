@@ -1,0 +1,20 @@
+{
+  "name": "LiSN Collectors (Sentinel) dev",
+  "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/start.sh",
+  "terminals": [
+    {
+      "name": "mock-sentinel",
+      "command": "set -a; source .env; set +a; export PYTHONPATH=\"$PWD\"; exec .venv/bin/python -m uvicorn mock.sentinel_api:app --host 127.0.0.1 --port 8081"
+    },
+    {
+      "name": "collector-api",
+      "command": "set -a; source .env; set +a; export PYTHONPATH=\"$PWD\"; exec .venv/bin/python -m uvicorn collector.api:api --host 127.0.0.1 --port 8080"
+    },
+    {
+      "name": "sentinel-worker",
+      "command": "set -a; source .env; set +a; export PYTHONPATH=\"$PWD\"; export PROCRASTINATE_APP=collector.app.app; exec .venv/bin/python -m procrastinate worker -q sentinel -c 1 --delete-jobs never"
+    }
+  ],
+  "ports": [8080, 8081]
+}
