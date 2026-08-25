@@ -19,6 +19,11 @@
       "command": "set -a; source .env; set +a; export PYTHONPATH=\"$PWD\"; export PROCRASTINATE_APP=collector.app.app; until pg_isready -h 127.0.0.1 -p 5432 -q; do sleep 1; done; exec .venv/bin/python -m procrastinate worker -q sentinel -c 1 --delete-jobs never"
     },
     {
+      "name": "sentinel-discovery-worker",
+      "description": "Procrastinate worker on the sentinel_discovery queue.",
+      "command": "set -a; source .env; set +a; export PYTHONPATH=\"$PWD\"; export PROCRASTINATE_APP=collector.app.app; until pg_isready -h 127.0.0.1 -p 5432 -q; do sleep 1; done; exec .venv/bin/python -m procrastinate worker -q sentinel_discovery -c 1 --delete-jobs never"
+    },
+    {
       "name": "maintenance-worker",
       "description": "Runs the periodic sweep (cron */2) and sweep_now. Required for any recovery or lease-expiry test.",
       "command": "set -a; source .env; set +a; export PYTHONPATH=\"$PWD\"; export PROCRASTINATE_APP=collector.app.app; until pg_isready -h 127.0.0.1 -p 5432 -q; do sleep 1; done; exec .venv/bin/python -m procrastinate worker -q maintenance -c 1 --delete-jobs never"
