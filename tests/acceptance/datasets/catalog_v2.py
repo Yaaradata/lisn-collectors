@@ -154,11 +154,14 @@ def _apply_ds4_sparse() -> None:
             ids = [r[0] for r in cur.fetchall()]
             n = len(ids)
             null_tracking = set(ids[: int(0.30 * n)])
-            no_threads = set(ids[int(0.30 * n) : int(0.45 * n)])
+            null_thread_marker = set(ids[int(0.30 * n) : int(0.45 * n)])
             null_order_item = set(ids[int(0.45 * n) : int(0.55 * n)])
             cur.execute("UPDATE sentinel_incident SET tracking_id=NULL WHERE id = ANY(%s)", (list(null_tracking),))
-            cur.execute("DELETE FROM sentinel_thread WHERE incident_id = ANY(%s)", (list(no_threads),))
             cur.execute("UPDATE sentinel_incident SET order_item_id=NULL WHERE id = ANY(%s)", (list(null_order_item),))
+            cur.execute(
+                "UPDATE sentinel_incident SET subject = subject || ' [DS4-NULL-THREAD]' WHERE id = ANY(%s)",
+                (list(null_thread_marker),),
+            )
         conn.commit()
 
 
@@ -369,7 +372,23 @@ DATASETS: list[DatasetFixture] = [
     DatasetFixture("DS-1", "Baseline 1,000 incidents default thread distribution", "Normal operation reference", _build_ds1, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id ORDER BY i.id, t.thread_id NULLS LAST", _noop),
     DatasetFixture("DS-2", "Population full date-range seed", "Cycle-window fit at population scale", _build_ds2, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id ORDER BY i.id, t.thread_id NULLS LAST", _noop),
     DatasetFixture("DS-3", "Thread skew: one 500-thread, one 0-thread", "Response blowup or silent truncation", _build_ds3, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id ORDER BY i.id, t.thread_id NULLS LAST", _noop),
-    DatasetFixture("DS-4", "Sparse nulls: tracking/thread/order_item", "Null handling through parse/load/merge", _build_ds4, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id ORDER BY i.id, t.thread_id NULLS LAST", _noop),
+    DatasetFixture(
+        "DS-4",
+        "Sparse nulls: tracking/thread/order_item",
+        "Null handling through parse/load/merge",
+        _build_ds4,
+        """
+        SELECT i.id, t.thread_id
+        FROM sentinel_incident i
+        LEFT JOIN sentinel_thread t ON t.incident_id = i.id
+        UNION ALL
+        SELECT i.id, NULL::text AS thread_id
+        FROM sentinel_incident i
+        WHERE position('[DS4-NULL-THREAD]' in i.subject) > 0
+        ORDER BY id, thread_id NULLS LAST
+        """,
+        _noop,
+    ),
     DatasetFixture("DS-5", "Dirty text: unicode/emoji/control/4k subject", "Encoding and injection round-trip", _build_ds5, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id WHERE length(i.subject) >= 200 OR position('🚚' in i.subject) > 0 OR position('{\"incidents\":[]}' in i.subject) > 0 ORDER BY i.id, t.thread_id NULLS LAST", _noop),
     DatasetFixture("DS-6", "Boundary numerics incl 2^53±1 and negatives", "Numeric fidelity at incident grain", _build_ds6, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id WHERE i.id = ANY(%(ids)s) ORDER BY i.id, t.thread_id NULLS LAST", lambda s: _truth_ids(s, 5)),
     DatasetFixture("DS-7", "Collision scenarios on ids/threads and shared order ids", "Merge-key correctness", _build_ds7, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id WHERE i.order_id='OD-COLLIDE-1' ORDER BY i.id, t.thread_id NULLS LAST", _noop),
