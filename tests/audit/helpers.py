@@ -157,3 +157,12 @@ def seed_jobs_for_incident_ids(incident_ids: list[str]) -> tuple[str, list[str]]
                 )
         conn.commit()
     return request_id, job_ids
+
+
+def run_jobs_with_fakes(job_ids: list[str]) -> None:
+    from collector.tasks import fetch_page
+    from tests.audit.fakes import SinkPatch
+
+    with SinkPatch():
+        for job_id in job_ids:
+            fetch_page(job_id=job_id)
