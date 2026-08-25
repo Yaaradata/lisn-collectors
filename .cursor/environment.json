@@ -1,0 +1,26 @@
+{
+  "name": "LiSN Collectors (local dev)",
+  "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/start.sh",
+  "terminals": [
+    {
+      "name": "mock-sentinel",
+      "description": "Fake Flipkart Sentinel export service on http://127.0.0.1:8081 (reads sentinel_mock).",
+      "command": "cd /workspace && set -a && source .env && set +a && export PYTHONPATH=/workspace && exec ./.venv/bin/python -m uvicorn mock.sentinel_api:app --host 127.0.0.1 --port 8081"
+    },
+    {
+      "name": "collector-api",
+      "description": "LiSN request API on http://127.0.0.1:8080 (POST /v1/collect, /v1/requests/{id}/counts, /v1/reconcile).",
+      "command": "cd /workspace && set -a && source .env && set +a && export PYTHONPATH=/workspace && exec ./.venv/bin/python -m uvicorn collector.api:api --host 127.0.0.1 --port 8080"
+    },
+    {
+      "name": "sentinel-worker",
+      "description": "Procrastinate worker for the `sentinel` queue (-c 1). NOTE: the fetch->GCS->BigQuery leg needs Google Cloud credentials; without them a claimed page fails at the GCS write.",
+      "command": "cd /workspace && set -a && source .env && set +a && export PYTHONPATH=/workspace && export PROCRASTINATE_APP=collector.app.app && exec ./.venv/bin/python -m procrastinate worker -q sentinel -c 1 --delete-jobs never"
+    }
+  ],
+  "ports": [
+    { "name": "mock-sentinel", "port": 8081 },
+    { "name": "collector-api", "port": 8080 }
+  ]
+}
