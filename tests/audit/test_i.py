@@ -98,3 +98,21 @@ def test_i06_shell_script_hygiene() -> None:
         ],
     )
     assert rc_strict == 0
+
+
+def test_i07_install_env_upsert_escaping_risk() -> None:
+    test_id = "I-07"
+    rc, out = _run("rg -n 'sed -i \"s#\\^\\$\\{key\\}=\\.\\*#\\$\\{key\\}=\\$\\{value\\}#\"|upsert_env\\(|RAW_BUCKET' .cursor/install.sh")
+    write_evidence(
+        test_id,
+        [
+            f"rg_rc={rc}",
+            out,
+            (
+                "Finding: .cursor/install.sh upsert_env writes unescaped values via sed replacement. "
+                "Observed impact during audit: RAW_BUCKET became corrupted, worker posted to wrong "
+                "bucket path, and fetch_page retried with misleading 404 symptoms."
+            ),
+        ],
+    )
+    assert rc == 0
