@@ -23,6 +23,8 @@ Date: `<date>` · Total elapsed: `<hh:mm>`
 
 **Fidelity caveat.** Tests D-05, G-02, G-03 and G-04 ran against local fakes, not against BigQuery. BigQuery's streaming-insert path handles column defaults, partitioning and numeric coercion differently from any local fake. These four findings are indicative and must be re-run on `clariversev1` before they are treated as settled.
 
+**FakeBQ must be strict.** `tests/audit/fakes.py` `FakeBQ` parses the column list **and types** from `sql/003_bigquery.sql` and rejects any row carrying a field not in that schema (mirroring `insert_rows_json` returning per-row errors, which `collector/load.py` turns into a `RuntimeError`). It also coerces values to the declared type — `FLOAT64` for `orderItemId` / `orderItemUnitId` / `threads_communicationId`, `INT64`, `TIMESTAMP`, `BOOL` — and does not auto-populate the `_ingested_at` `DEFAULT`. A permissive fake makes **G-02** (schema drift) and **G-03** (numeric fidelity) false passes and hides **D-05**.
+
 Full dependency snapshot: `tests/audit/evidence/pip-freeze.txt`.
 
 ## 2. Headline
@@ -189,6 +191,13 @@ Per rule R2, the agent may add test code and mock fault knobs only. Every change
 |---|---|---|
 | `tests/audit/...` | added | audit test |
 | `mock/sentinel_api.py` | `<the specific admin endpoint added>` | needed by `<TEST-ID>` |
+
+**Monkeypatch sites and production-class overrides.** List every runtime override applied during the audit — not just the files created. Each monkeypatch/patch site (module and target), the replacement, the tests that use it, and whether it is restored after the test. Substituting `collector.raw`'s `storage` / `collector.load`'s `bigquery` (or `write_raw` / `append_records`) with a fake is a behavioural substitution and must appear here — an override left off this list reads as a hidden change to the code under test.
+
+| Site (module:target) | Override | Test(s) | Restored after |
+|---|---|---|---|
+| `<e.g. collector.load.bigquery.Client>` | `<FakeBQ>` | `<TEST-IDs>` | yes / no |
+| `<e.g. collector.raw.storage.Client>` | `<FakeGCS>` | `<TEST-IDs>` | yes / no |
 
 Confirm and state explicitly: no file under `collector/`, `sql/`, `scripts/`, `Makefile`, `Dockerfile` or `requirements.txt` was modified. If any was, say which and why, and expect the finding to be treated as invalid.
 
