@@ -5,6 +5,7 @@ from tests.acceptance.helpers import (
     dataset_by_code,
     dataset_truth_identity_set,
     incident_ids_from_identity_set,
+    mock_key_values_for_incidents,
     post_collect,
     post_collect_detailed,
     reset_collector_state,
@@ -93,3 +94,55 @@ def test_c3_multi_key_request_rejected_with_no_silent_fallback() -> None:
     detail = payload.get("detail")
     assert isinstance(detail, str)
     assert "exactly one of incident_ids, order_item_ids, order_ids required" in detail
+
+
+def test_c4_hostile_query_shapes_rejected_without_5xx() -> None:
+    reset_collector_state()
+    ds = dataset_by_code("DS-1")
+    ds.build()
+    cases = [
+        {},
+        {"incident_ids": []},
+        {"incident_ids": None},
+        {"incident_ids": "IN2608"},
+        {"incident_ids": [None, 1, {}]},
+        {"limit": 10},
+    ]
+    lines: list[str] = []
+    for idx, query_spec in enumerate(cases, start=1):
+        status, payload = post_collect_detailed("sentinel", query_spec)
+        lines.append(f"case={idx} status={status} payload={payload}")
+        assert status < 500
+        assert status == 400
+    write_evidence("C-4", lines)
+
+
+def test_c5_order_item_ids_identity_complete() -> None:
+    reset_collector_state()
+    ds = dataset_by_code("DS-6")
+    ds.build()
+    truth = dataset_truth_identity_set("DS-6")
+    incident_ids = incident_ids_from_identity_set(truth)
+    order_item_ids = mock_key_values_for_incidents(incident_ids, "order_item_id")
+    request_id = post_collect("sentinel", {"order_item_ids": order_item_ids})
+    outcome = wait_request_terminal(request_id, timeout_s=300)
+    observed = bq_identity_set(request_id)
+    missing = sorted(truth - observed)
+    extra = sorted(observed - truth)
+    write_evidence(
+        "C-5",
+        [
+            f"request_id={request_id}",
+            f"pages_done={outcome.done}/{outcome.total_pages}",
+            f"order_item_ids={order_item_ids}",
+            f"truth_identity_count={len(truth)}",
+            f"observed_identity_count={len(observed)}",
+            f"missing_count={len(missing)}",
+            f"extra_count={len(extra)}",
+            f"missing_first_3={missing[:3]}",
+            f"missing_last_3={missing[-3:] if missing else []}",
+        ],
+    )
+    assert outcome.failed == 0
+    assert outcome.dead == 0
+    assert observed == truth
