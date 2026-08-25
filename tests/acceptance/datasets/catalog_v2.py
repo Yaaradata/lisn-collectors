@@ -87,6 +87,10 @@ def _incident_ids(limit: int) -> list[str]:
             return [r[0] for r in cur.fetchall()]
 
 
+def _first_ids(limit: int) -> list[str]:
+    return _incident_ids(limit)
+
+
 def _set_even_updated_span(hours: int) -> None:
     with _connect() as conn:
         with conn.cursor() as cur:
@@ -220,6 +224,17 @@ class DatasetFixture:
                 cur.execute(self.truth_sql, self.truth_params_fn(self._snapshot))
                 return [dict(r) for r in cur.fetchall()]
 
+    def truth_count(self) -> int:
+        if self._snapshot is None:
+            self.build()
+        assert self._snapshot is not None
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT count(*)::bigint FROM ({self.truth_sql}) AS truth_rows",
+                    self.truth_params_fn(self._snapshot),
+                )
+                return int(cur.fetchone()[0])
 
 def _build_ds1() -> SeedSnapshot:
     return _run_seed(n_incidents=1000)
@@ -346,21 +361,25 @@ def _noop(_: SeedSnapshot) -> dict[str, Any]:
     return {}
 
 
+def _truth_ids(_: SeedSnapshot, limit: int) -> dict[str, Any]:
+    return {"ids": _first_ids(limit)}
+
+
 DATASETS: list[DatasetFixture] = [
     DatasetFixture("DS-1", "Baseline 1,000 incidents default thread distribution", "Normal operation reference", _build_ds1, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id ORDER BY i.id, t.thread_id NULLS LAST", _noop),
-    DatasetFixture("DS-2", "Population full date-range seed", "Cycle-window fit at population scale", _build_ds2, "SELECT count(*)::int AS incidents FROM sentinel_incident", _noop),
-    DatasetFixture("DS-3", "Thread skew: one 500-thread, one 0-thread", "Response blowup or silent truncation", _build_ds3, "SELECT i.id, count(t.thread_id)::int AS thread_count FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id GROUP BY i.id HAVING count(t.thread_id)=0 OR count(t.thread_id)>=500 ORDER BY i.id", _noop),
-    DatasetFixture("DS-4", "Sparse nulls: tracking/thread/order_item", "Null handling through parse/load/merge", _build_ds4, "SELECT count(*) FILTER (WHERE tracking_id IS NULL)::int AS null_tracking, count(*) FILTER (WHERE order_item_id IS NULL)::int AS null_order_item FROM sentinel_incident", _noop),
-    DatasetFixture("DS-5", "Dirty text: unicode/emoji/control/4k subject", "Encoding and injection round-trip", _build_ds5, "SELECT id, subject FROM sentinel_incident WHERE length(subject) >= 200 OR position('🚚' in subject) > 0 OR position('{\"incidents\":[]}' in subject) > 0 ORDER BY id LIMIT 20", _noop),
-    DatasetFixture("DS-6", "Boundary numerics incl 2^53±1 and negatives", "Numeric fidelity at incident grain", _build_ds6, "SELECT id, order_item_id::text FROM sentinel_incident ORDER BY id LIMIT 5", _noop),
-    DatasetFixture("DS-7", "Collision scenarios on ids/threads and shared order ids", "Merge-key correctness", _build_ds7, "SELECT order_id, count(*)::int AS incidents_per_order FROM sentinel_incident GROUP BY order_id HAVING count(*) > 1 ORDER BY order_id LIMIT 10", _noop),
-    DatasetFixture("DS-8", "Churn cohort present for cycle-1->cycle-2 mutation", "Re-collection reflects change", _build_ds8, "SELECT id, updated_on, status_status FROM sentinel_incident ORDER BY id LIMIT 200", _noop),
-    DatasetFixture("DS-9", "Late-arrival cohort baseline", "Mid-cycle insert catch-up on next cycle", _build_ds9, "SELECT id FROM sentinel_incident ORDER BY id LIMIT 100", _noop),
-    DatasetFixture("DS-10", "Deletion cohort baseline", "Stale-row behavior after source deletions", _build_ds10, "SELECT id FROM sentinel_incident ORDER BY id LIMIT 50", _noop),
-    DatasetFixture("DS-11", "Window contiguity 6-hour evenly spread", "Gap between caller windows", _build_ds11, "SELECT min(updated_on) AS min_updated_on, max(updated_on) AS max_updated_on, count(*)::int AS incidents FROM sentinel_incident", _noop),
-    DatasetFixture("DS-12", "Window boundary exact edges and ±1µs", "Off-by-one boundary loss/dup", _build_ds12, "SELECT id, subject, updated_on FROM sentinel_incident WHERE position('DS12-WINDOW-' in subject) = 1 ORDER BY subject", _noop),
-    DatasetFixture("DS-13", "Window overload 5,000 incidents in one hour", "Batch-cap paging correctness", _build_ds13, "SELECT min(updated_on) AS min_updated_on, max(updated_on) AS max_updated_on, count(*)::int AS incidents FROM sentinel_incident", _noop),
-    DatasetFixture("DS-14", "Mutation-in-window baseline", "Records moving in/out during cycle", _build_ds14, "SELECT id, updated_on FROM sentinel_incident ORDER BY id LIMIT 20", _noop),
-    DatasetFixture("DS-15", "Empty and sparse windows baseline", "Zero and one-result windows semantics", _build_ds15, "SELECT min(updated_on) AS min_updated_on, max(updated_on) AS max_updated_on, count(*)::int AS incidents FROM sentinel_incident", _noop),
+    DatasetFixture("DS-2", "Population full date-range seed", "Cycle-window fit at population scale", _build_ds2, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id ORDER BY i.id, t.thread_id NULLS LAST", _noop),
+    DatasetFixture("DS-3", "Thread skew: one 500-thread, one 0-thread", "Response blowup or silent truncation", _build_ds3, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id ORDER BY i.id, t.thread_id NULLS LAST", _noop),
+    DatasetFixture("DS-4", "Sparse nulls: tracking/thread/order_item", "Null handling through parse/load/merge", _build_ds4, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id ORDER BY i.id, t.thread_id NULLS LAST", _noop),
+    DatasetFixture("DS-5", "Dirty text: unicode/emoji/control/4k subject", "Encoding and injection round-trip", _build_ds5, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id WHERE length(i.subject) >= 200 OR position('🚚' in i.subject) > 0 OR position('{\"incidents\":[]}' in i.subject) > 0 ORDER BY i.id, t.thread_id NULLS LAST", _noop),
+    DatasetFixture("DS-6", "Boundary numerics incl 2^53±1 and negatives", "Numeric fidelity at incident grain", _build_ds6, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id WHERE i.id = ANY(%(ids)s) ORDER BY i.id, t.thread_id NULLS LAST", lambda s: _truth_ids(s, 5)),
+    DatasetFixture("DS-7", "Collision scenarios on ids/threads and shared order ids", "Merge-key correctness", _build_ds7, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id WHERE i.order_id='OD-COLLIDE-1' ORDER BY i.id, t.thread_id NULLS LAST", _noop),
+    DatasetFixture("DS-8", "Churn cohort present for cycle-1->cycle-2 mutation", "Re-collection reflects change", _build_ds8, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id WHERE i.id = ANY(%(ids)s) ORDER BY i.id, t.thread_id NULLS LAST", lambda s: _truth_ids(s, 200)),
+    DatasetFixture("DS-9", "Late-arrival cohort baseline", "Mid-cycle insert catch-up on next cycle", _build_ds9, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id WHERE i.id = ANY(%(ids)s) ORDER BY i.id, t.thread_id NULLS LAST", lambda s: _truth_ids(s, 100)),
+    DatasetFixture("DS-10", "Deletion cohort baseline", "Stale-row behavior after source deletions", _build_ds10, "SELECT i.id, t.thread_id FROM sentinel_incident i LEFT JOIN sentinel_thread t ON t.incident_id=i.id WHERE i.id = ANY(%(ids)s) ORDER BY i.id, t.thread_id NULLS LAST", lambda s: _truth_ids(s, 50)),
+    DatasetFixture("DS-11", "Window contiguity 6-hour evenly spread", "Gap between caller windows", _build_ds11, "SELECT id AS incident_id FROM sentinel_incident ORDER BY id", _noop),
+    DatasetFixture("DS-12", "Window boundary exact edges and ±1µs", "Off-by-one boundary loss/dup", _build_ds12, "SELECT id AS incident_id FROM sentinel_incident WHERE position('DS12-WINDOW-' in subject) = 1 ORDER BY id", _noop),
+    DatasetFixture("DS-13", "Window overload 5,000 incidents in one hour", "Batch-cap paging correctness", _build_ds13, "SELECT id AS incident_id FROM sentinel_incident ORDER BY id", _noop),
+    DatasetFixture("DS-14", "Mutation-in-window baseline", "Records moving in/out during cycle", _build_ds14, "SELECT id AS incident_id FROM sentinel_incident ORDER BY id", _noop),
+    DatasetFixture("DS-15", "Empty and sparse windows baseline", "Zero and one-result windows semantics", _build_ds15, "SELECT id AS incident_id FROM sentinel_incident ORDER BY id", _noop),
 ]
 
