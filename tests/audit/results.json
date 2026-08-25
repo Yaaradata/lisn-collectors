@@ -1,0 +1,546 @@
+{
+  "generated_at": "2026-08-25T16:18:51.409743+00:00",
+  "elapsed_seconds": 10,
+  "results": [
+    {
+      "test_id": "A-01",
+      "section": "A",
+      "title": "Install is idempotent",
+      "result": "PASS",
+      "severity": "S4",
+      "note": "Recorded prior evidence per user instruction.",
+      "evidence": "tests/audit/evidence/A-01.log"
+    },
+    {
+      "test_id": "A-02",
+      "section": "A",
+      "title": "Dependency reproducibility",
+      "result": "FAIL",
+      "severity": "S3",
+      "note": "Floating dependencies present; reproducibility not guaranteed six weeks out.",
+      "evidence": "tests/audit/evidence/A-02.log"
+    },
+    {
+      "test_id": "A-03",
+      "section": "A",
+      "title": "Import without GCP credentials",
+      "result": "PASS",
+      "severity": "S4",
+      "note": "Recorded prior evidence per user instruction.",
+      "evidence": "tests/audit/evidence/A-03.log"
+    },
+    {
+      "test_id": "A-04",
+      "section": "A",
+      "title": "One image, three roles",
+      "result": "BLOCKED",
+      "severity": "S2",
+      "note": "Container runtime/image build path not available in this run.",
+      "evidence": "tests/audit/evidence/A-04.log"
+    },
+    {
+      "test_id": "A-05",
+      "section": "A",
+      "title": "Secret hygiene and env completeness",
+      "result": "FAIL",
+      "severity": "S4",
+      "note": ".env.example is incomplete relative to environment key usage.",
+      "evidence": "tests/audit/evidence/A-05.log"
+    },
+    {
+      "test_id": "B-01",
+      "section": "B",
+      "title": "Protocol satisfaction",
+      "result": "PASS",
+      "severity": "S4",
+      "note": "Protocol attributes present at runtime.",
+      "evidence": "tests/audit/evidence/B-01.log"
+    },
+    {
+      "test_id": "B-02",
+      "section": "B",
+      "title": "Declared fields that nothing reads",
+      "result": "FAIL",
+      "severity": "S4",
+      "note": "max_attempts and queue routing are hardcoded in task decorator/runtime.",
+      "evidence": "tests/audit/evidence/B-02.log"
+    },
+    {
+      "test_id": "B-03",
+      "section": "B",
+      "title": "Cost of adding collector #2",
+      "result": "FAIL",
+      "severity": "S3",
+      "note": "Adding source #2 needs central registry/task assumptions beyond one source module.",
+      "evidence": "tests/audit/evidence/B-03.log"
+    },
+    {
+      "test_id": "B-04",
+      "section": "B",
+      "title": "Table qualification",
+      "result": "FAIL",
+      "severity": "S1",
+      "note": "When PROJECT is unset and table is two-part, code writes unqualified table name instead of raising.",
+      "evidence": "tests/audit/evidence/B-04.log"
+    },
+    {
+      "test_id": "B-05",
+      "section": "B",
+      "title": "Unknown source rejection",
+      "result": "PASS",
+      "severity": "S4",
+      "note": "Unknown source rejected with HTTP 400.",
+      "evidence": "tests/audit/evidence/B-05.log"
+    },
+    {
+      "test_id": "C-01",
+      "section": "C",
+      "title": "Page boundary arithmetic",
+      "result": "PASS",
+      "severity": "S1",
+      "note": "Recorded prior evidence per user instruction.",
+      "evidence": "tests/audit/evidence/C-01.log"
+    },
+    {
+      "test_id": "C-02",
+      "section": "C",
+      "title": "Duplicate keys",
+      "result": "FAIL",
+      "severity": "S3",
+      "note": "Duplicate keys are not deduplicated in planning.",
+      "evidence": "tests/audit/evidence/C-02.log"
+    },
+    {
+      "test_id": "C-03",
+      "section": "C",
+      "title": "Both key types supplied",
+      "result": "FAIL",
+      "severity": "S2",
+      "note": "Both key types accepted; order_ids silently ignored.",
+      "evidence": "tests/audit/evidence/C-03.log"
+    },
+    {
+      "test_id": "C-04",
+      "section": "C",
+      "title": "Hostile inputs",
+      "result": "FAIL",
+      "severity": "S2",
+      "note": "Several hostile inputs return 200/500 paths instead of clear 4xx.",
+      "evidence": "tests/audit/evidence/C-04.log"
+    },
+    {
+      "test_id": "C-05",
+      "section": "C",
+      "title": "Unsupported order_item_ids",
+      "result": "FAIL",
+      "severity": "S2",
+      "note": "order_item_ids path is unsupported but not explicitly validated.",
+      "evidence": "tests/audit/evidence/C-05.log"
+    },
+    {
+      "test_id": "C-06",
+      "section": "C",
+      "title": "Page never exceeds source cap",
+      "result": "PASS",
+      "severity": "S1",
+      "note": "Recorded prior evidence per user instruction.",
+      "evidence": "tests/audit/evidence/C-06.log"
+    },
+    {
+      "test_id": "D-01",
+      "section": "D",
+      "title": "Raw path across UTC midnight",
+      "result": "FAIL",
+      "severity": "S1",
+      "note": "Date-based object path changes across UTC midnight and creates duplicate keyspace.",
+      "evidence": "tests/audit/evidence/D-01.log"
+    },
+    {
+      "test_id": "D-02",
+      "section": "D",
+      "title": "Same-day rewrite",
+      "result": "PASS",
+      "severity": "S1",
+      "note": "Same-day rewrites overwrite same object path.",
+      "evidence": "tests/audit/evidence/D-02.log"
+    },
+    {
+      "test_id": "D-03",
+      "section": "D",
+      "title": "Full replay",
+      "result": "PASS",
+      "severity": "S1",
+      "note": "Replay doubles raw rows and keeps object count stable.",
+      "evidence": "tests/audit/evidence/D-03.log"
+    },
+    {
+      "test_id": "D-04",
+      "section": "D",
+      "title": "Missing thread id",
+      "result": "BLOCKED",
+      "severity": "S1",
+      "note": "Requires BigQuery view semantics (`incidents_current`) on clariversev1.",
+      "evidence": "tests/audit/evidence/D-04.log"
+    },
+    {
+      "test_id": "D-05",
+      "section": "D",
+      "title": "_ingested_at under streaming insert",
+      "result": "FAIL",
+      "severity": "S1",
+      "note": "Fake sink shows _ingested_at is not auto-populated under insert_rows_json-like path.",
+      "evidence": "tests/audit/evidence/D-05.log"
+    },
+    {
+      "test_id": "D-06",
+      "section": "D",
+      "title": "Merge key genuinely composite",
+      "result": "BLOCKED",
+      "severity": "S1",
+      "note": "Requires BigQuery view semantics on clariversev1.",
+      "evidence": "tests/audit/evidence/D-06.log"
+    },
+    {
+      "test_id": "D-07",
+      "section": "D",
+      "title": "Thread explosion factor end to end",
+      "result": "PASS",
+      "severity": "S1",
+      "note": "Full 1000-incident dataset factor observed at 2.481 (not single-sample 4-thread anecdote).",
+      "evidence": "tests/audit/evidence/D-07.log"
+    },
+    {
+      "test_id": "G-01",
+      "section": "G",
+      "title": "Field completeness both ways",
+      "result": "PASS",
+      "severity": "S1",
+      "note": "Field sets compared between export mapping and warehouse schema.",
+      "evidence": "tests/audit/evidence/G-01.log"
+    },
+    {
+      "test_id": "G-02",
+      "section": "G",
+      "title": "Schema drift",
+      "result": "PASS",
+      "severity": "S1",
+      "note": "Unexpected schema field is rejected loudly by strict FakeBQ.",
+      "evidence": "tests/audit/evidence/G-02.log"
+    },
+    {
+      "test_id": "G-03",
+      "section": "G",
+      "title": "Numeric fidelity at incident grain",
+      "result": "FAIL",
+      "severity": "S1",
+      "note": "FLOAT64 coercion changes >2^53 integer identity.",
+      "evidence": "tests/audit/evidence/G-03.log"
+    },
+    {
+      "test_id": "G-04",
+      "section": "G",
+      "title": "Timezone fidelity",
+      "result": "FAIL",
+      "severity": "S1",
+      "note": "Naive timestamp is treated as UTC and differs from +05:30 instant.",
+      "evidence": "tests/audit/evidence/G-04.log"
+    },
+    {
+      "test_id": "G-05",
+      "section": "G",
+      "title": "Provenance columns",
+      "result": "PASS",
+      "severity": "S1",
+      "note": "Checked _raw_uri object existence and sha256 match with raw_manifest.",
+      "evidence": "tests/audit/evidence/G-05.log"
+    },
+    {
+      "test_id": "H-01",
+      "section": "H",
+      "title": "Authentication surface",
+      "result": "FAIL",
+      "severity": "S1",
+      "note": "Local endpoints are unauthenticated; deployed auth depends on Cloud Run IAM configuration.",
+      "evidence": "tests/audit/evidence/H-01.log"
+    },
+    {
+      "test_id": "H-02",
+      "section": "H",
+      "title": "Error-message redaction",
+      "result": "FAIL",
+      "severity": "S1",
+      "note": "last_error stores unredacted exception text and is returned by /v1/dead-letter.",
+      "evidence": "tests/audit/evidence/H-02.log"
+    },
+    {
+      "test_id": "H-03",
+      "section": "H",
+      "title": "Request completion signal",
+      "result": "FAIL",
+      "severity": "S2",
+      "note": "collector_request remains open with null closed_at after completion.",
+      "evidence": "tests/audit/evidence/H-03.log"
+    },
+    {
+      "test_id": "H-04",
+      "section": "H",
+      "title": "Malformed path parameters",
+      "result": "FAIL",
+      "severity": "S3",
+      "note": "Malformed UUID path returns 500 instead of 400/404 split.",
+      "evidence": "tests/audit/evidence/H-04.log"
+    },
+    {
+      "test_id": "H-05",
+      "section": "H",
+      "title": "Replay of identical request",
+      "result": "FAIL",
+      "severity": "S3",
+      "note": "Identical request replay is accepted with no idempotency key.",
+      "evidence": "tests/audit/evidence/H-05.log"
+    },
+    {
+      "test_id": "H-06",
+      "section": "H",
+      "title": "Partial defer",
+      "result": "BLOCKED",
+      "severity": "S2",
+      "note": "Needs controlled API crash injection window on clariversev1.",
+      "evidence": "tests/audit/evidence/H-06.log"
+    },
+    {
+      "test_id": "E-01",
+      "section": "E",
+      "title": "Hard kill mid-fetch",
+      "result": "BLOCKED",
+      "severity": "S1",
+      "note": "Sink-dependent recovery assertion queued for clariversev1 rerun by Ranjith BK.",
+      "evidence": "tests/audit/evidence/E-01.log"
+    },
+    {
+      "test_id": "E-02",
+      "section": "E",
+      "title": "Kill in raw-written / not-loaded window",
+      "result": "BLOCKED",
+      "severity": "S1",
+      "note": "Sink-dependent recovery assertion queued for clariversev1 rerun by Ranjith BK.",
+      "evidence": "tests/audit/evidence/E-02.log"
+    },
+    {
+      "test_id": "E-03",
+      "section": "E",
+      "title": "Transient failure and attempt accounting",
+      "result": "BLOCKED",
+      "severity": "S2",
+      "note": "Needs live retry path measurement on clariversev1.",
+      "evidence": "tests/audit/evidence/E-03.log"
+    },
+    {
+      "test_id": "E-04",
+      "section": "E",
+      "title": "Permanent source failure",
+      "result": "BLOCKED",
+      "severity": "S2",
+      "note": "Needs long-run live queue execution on clariversev1.",
+      "evidence": "tests/audit/evidence/E-04.log"
+    },
+    {
+      "test_id": "E-05",
+      "section": "E",
+      "title": "Orphaned pending row",
+      "result": "FAIL",
+      "severity": "S2",
+      "note": "Pending orphan row is not recovered by sweeper; remains pending.",
+      "evidence": "tests/audit/evidence/E-05.log"
+    },
+    {
+      "test_id": "E-06",
+      "section": "E",
+      "title": "Concurrent sweepers",
+      "result": "BLOCKED",
+      "severity": "S3",
+      "note": "Sink-dependent recovery assertion queued for clariversev1 rerun by Ranjith BK.",
+      "evidence": "tests/audit/evidence/E-06.log"
+    },
+    {
+      "test_id": "E-07",
+      "section": "E",
+      "title": "Killswitch under load",
+      "result": "BLOCKED",
+      "severity": "S3",
+      "note": "Queued for clariversev1 rerun by Ranjith BK.",
+      "evidence": "tests/audit/evidence/E-07.log"
+    },
+    {
+      "test_id": "E-08",
+      "section": "E",
+      "title": "Database outage mid-run",
+      "result": "BLOCKED",
+      "severity": "S1",
+      "note": "Requires isolated environment outage simulation.",
+      "evidence": "tests/audit/evidence/E-08.log"
+    },
+    {
+      "test_id": "E-09",
+      "section": "E",
+      "title": "Poison-pill payloads",
+      "result": "BLOCKED",
+      "severity": "S1",
+      "note": "Deferred: mock fault endpoints not added in this run.",
+      "evidence": "tests/audit/evidence/E-09.log"
+    },
+    {
+      "test_id": "E-10",
+      "section": "E",
+      "title": "Fetch outlives lease",
+      "result": "BLOCKED",
+      "severity": "S2",
+      "note": "Sink-dependent recovery assertion queued for clariversev1 rerun by Ranjith BK.",
+      "evidence": "tests/audit/evidence/E-10.log"
+    },
+    {
+      "test_id": "F-01",
+      "section": "F",
+      "title": "Single-worker rate",
+      "result": "BLOCKED",
+      "severity": "S3",
+      "note": "Run on clariversev1 with dedicated measurement harness.",
+      "evidence": "tests/audit/evidence/F-01.log"
+    },
+    {
+      "test_id": "F-02",
+      "section": "F",
+      "title": "Multi-worker ceiling",
+      "result": "BLOCKED",
+      "severity": "S3",
+      "note": "Run on clariversev1 with worker scale control.",
+      "evidence": "tests/audit/evidence/F-02.log"
+    },
+    {
+      "test_id": "F-03",
+      "section": "F",
+      "title": "Throughput at pilot shape",
+      "result": "BLOCKED",
+      "severity": "S3",
+      "note": "Requires dedicated quiet run window on clariversev1.",
+      "evidence": "tests/audit/evidence/F-03.log"
+    },
+    {
+      "test_id": "F-04",
+      "section": "F",
+      "title": "Connection pressure",
+      "result": "BLOCKED",
+      "severity": "S2",
+      "note": "Requires scale-out deployment on clariversev1.",
+      "evidence": "tests/audit/evidence/F-04.log"
+    },
+    {
+      "test_id": "I-01",
+      "section": "I",
+      "title": "Three open corrections",
+      "result": "FAIL",
+      "severity": "S2",
+      "note": "workers-start check exists; sentinel_discovery/order_item_ids correction remains absent.",
+      "evidence": "tests/audit/evidence/I-01.log"
+    },
+    {
+      "test_id": "I-02",
+      "section": "I",
+      "title": "Destructive-script guards",
+      "result": "FAIL",
+      "severity": "S1",
+      "note": "Destructive scripts rely on env presence but do not enforce non-prod project confirmation.",
+      "evidence": "tests/audit/evidence/I-02.log"
+    },
+    {
+      "test_id": "I-03",
+      "section": "I",
+      "title": "Make target ergonomics",
+      "result": "FAIL",
+      "severity": "S4",
+      "note": "Documented make flows do not run cleanly in this environment context.",
+      "evidence": "tests/audit/evidence/I-03.log"
+    },
+    {
+      "test_id": "I-04",
+      "section": "I",
+      "title": "Worker identity",
+      "result": "PASS",
+      "severity": "S2",
+      "note": "Worker identity derivation by CLOUD_RUN_TASK_INDEX is present and deterministic in code.",
+      "evidence": "tests/audit/evidence/I-04.log"
+    },
+    {
+      "test_id": "I-05",
+      "section": "I",
+      "title": "Periodic sweep with multiple maintenance workers",
+      "result": "PASS",
+      "severity": "S3",
+      "note": "Recorded prior evidence per user instruction.",
+      "evidence": "tests/audit/evidence/I-05.log"
+    },
+    {
+      "test_id": "I-06",
+      "section": "I",
+      "title": "Shell script hygiene",
+      "result": "PASS",
+      "severity": "S4",
+      "note": "Strict mode and shellcheck output recorded.",
+      "evidence": "tests/audit/evidence/I-06.log"
+    },
+    {
+      "test_id": "J-01",
+      "section": "J",
+      "title": "Comment claims versus behavior",
+      "result": "FAIL",
+      "severity": "S4+",
+      "note": "Multiple strong comments overstate behavior proven false by B/E/D findings.",
+      "evidence": "tests/audit/evidence/J-01.log"
+    },
+    {
+      "test_id": "J-02",
+      "section": "J",
+      "title": "README accuracy",
+      "result": "FAIL",
+      "severity": "S4",
+      "note": "README paths diverge from practical local run constraints and prerequisites.",
+      "evidence": "tests/audit/evidence/J-02.log"
+    }
+  ],
+  "monkeypatch_sites": {
+    "collector.load.bigquery.Client -> tests.audit.run_audit.CaptureClient": {
+      "tests": [
+        "B-04"
+      ],
+      "restored_after_each_use": true
+    },
+    "collector.raw.datetime -> tests.audit.run_audit.FakeDateTime": {
+      "tests": [
+        "D-01"
+      ],
+      "restored_after_each_use": true
+    },
+    "collector.raw.storage.Client -> tests.audit.fakes.FakeGCS.Client": {
+      "tests": [
+        "D-01",
+        "D-02",
+        "D-03",
+        "G-02",
+        "G-03",
+        "G-04",
+        "G-05"
+      ],
+      "restored_after_each_use": true
+    },
+    "collector.load.bigquery.Client -> tests.audit.fakes.FakeBQ.Client": {
+      "tests": [
+        "D-03",
+        "G-02",
+        "G-03",
+        "G-04",
+        "G-05"
+      ],
+      "restored_after_each_use": true
+    }
+  }
+}
