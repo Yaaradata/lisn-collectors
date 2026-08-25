@@ -210,7 +210,7 @@ gcloud run deploy "$API_SERVICE" \
   --add-cloudsql-instances="$CONN" \
   --min-instances=1 \
   --port=8080 \
-  --set-env-vars="SENTINEL_URL=${SENTINEL_URL},RAW_BUCKET=${BUCKET},GOOGLE_CLOUD_PROJECT=${PROJECT},USE_ID_TOKEN=1" \
+  --set-env-vars="SENTINEL_URL=${SENTINEL_URL},RAW_BUCKET=${BUCKET},PROJECT=${PROJECT},GOOGLE_CLOUD_PROJECT=${PROJECT},REGION=${REGION},ALLOW_ADMIN_RESET=${ALLOW_ADMIN_RESET:-1},USE_ID_TOKEN=1" \
   --set-secrets="COLLECTOR_DSN=collector-dsn:latest" \
   --command=uvicorn \
   --args="collector.api:api,--host,0.0.0.0,--port,8080" \

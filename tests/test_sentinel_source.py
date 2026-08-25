@@ -35,12 +35,18 @@ def test_plan_page_boundaries(sentinel: SentinelCollector) -> None:
 
 
 def test_plan_empty_raises(sentinel: SentinelCollector) -> None:
-    with pytest.raises(ValueError, match="incident_ids or order_ids required"):
+    with pytest.raises(
+        ValueError,
+        match="incident_ids, order_item_ids or order_ids required",
+    ):
         sentinel.plan({})
 
 
 def test_plan_status_only_raises(sentinel: SentinelCollector) -> None:
-    with pytest.raises(ValueError, match="incident_ids or order_ids required"):
+    with pytest.raises(
+        ValueError,
+        match="incident_ids, order_item_ids or order_ids required",
+    ):
         sentinel.plan({"status": "open"})
 
 
@@ -49,6 +55,45 @@ def test_plan_order_ids(sentinel: SentinelCollector) -> None:
     assert len(pages) == 1
     assert pages[0].payload == {"order_ids": ["OD1", "OD2"]}
     assert "incident_ids" not in pages[0].payload
+
+
+def test_plan_500_order_item_ids_makes_10_pages(sentinel: SentinelCollector) -> None:
+    ids = [4_000_000_000_000_000 + i for i in range(500)]
+    pages = sentinel.plan({"order_item_ids": ids})
+    assert len(pages) == 10
+    assert [p.page_no for p in pages] == list(range(10))
+    assert all(len(p.payload["order_item_ids"]) == 50 for p in pages)
+    assert pages[0].payload["order_item_ids"][0] == ids[0]
+    assert pages[-1].payload["order_item_ids"][-1] == ids[-1]
+
+
+def test_plan_order_item_ids_alone(sentinel: SentinelCollector) -> None:
+    pages = sentinel.plan({"order_item_ids": [4_000_000_000_000_001]})
+    assert len(pages) == 1
+    assert pages[0].payload == {"order_item_ids": [4_000_000_000_000_001]}
+    assert "incident_ids" not in pages[0].payload
+    assert "order_ids" not in pages[0].payload
+
+
+def test_plan_incident_and_order_item_ids_raises(sentinel: SentinelCollector) -> None:
+    with pytest.raises(
+        ValueError,
+        match="exactly one of.*got incident_ids, order_item_ids",
+    ):
+        sentinel.plan(
+            {
+                "incident_ids": ["IN1"],
+                "order_item_ids": [4_000_000_000_000_001],
+            }
+        )
+
+
+def test_plan_empty_order_item_ids_raises(sentinel: SentinelCollector) -> None:
+    with pytest.raises(
+        ValueError,
+        match="incident_ids, order_item_ids or order_ids required",
+    ):
+        sentinel.plan({"order_item_ids": []})
 
 
 def test_parse_thread_explosion_keys(sentinel: SentinelCollector) -> None:

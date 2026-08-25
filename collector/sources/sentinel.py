@@ -29,20 +29,38 @@ class SentinelCollector:
 
     def plan(self, query_spec: dict) -> list[Page]:
         # This rejection is a hard product rule, not defensive coding. Queries are
-        # per-key, by incident ID or order ID. The real Sentinel console exposes
-        # exactly these two as multi-value filter boxes, so this mirrors the source.
-        incident_ids = query_spec.get("incident_ids") or []
-        order_ids = query_spec.get("order_ids") or []
+        # per-key, by incident ID, order-item ID, or order ID. Flipkart's domain
+        # advisor: an incident is created against an ORDER ITEM ("the currency
+        # would be on order item id"); a multi-item order yields one incident per
+        # item. The console also exposes incident / order multi-value filters.
+        incident_ids = list(query_spec.get("incident_ids") or [])
+        order_item_ids = list(query_spec.get("order_item_ids") or [])
+        order_ids = list(query_spec.get("order_ids") or [])
+
+        supplied: list[str] = []
         if incident_ids:
-            field = "incident_ids"
-            keys = list(incident_ids)
-        elif order_ids:
-            field = "order_ids"
-            keys = list(order_ids)
-        else:
+            supplied.append("incident_ids")
+        if order_item_ids:
+            supplied.append("order_item_ids")
+        if order_ids:
+            supplied.append("order_ids")
+
+        if len(supplied) > 1:
             raise ValueError(
-                "incident_ids or order_ids required — no generic queries"
+                "exactly one of incident_ids, order_item_ids, order_ids required; "
+                f"got {', '.join(supplied)}"
             )
+        if not supplied:
+            raise ValueError(
+                "incident_ids, order_item_ids or order_ids required — no generic queries"
+            )
+
+        field = supplied[0]
+        keys = {
+            "incident_ids": incident_ids,
+            "order_item_ids": order_item_ids,
+            "order_ids": order_ids,
+        }[field]
 
         pages: list[Page] = []
         for page_no, start in enumerate(range(0, len(keys), self.batch_cap)):

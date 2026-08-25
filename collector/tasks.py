@@ -273,9 +273,9 @@ async def _run_sweep() -> dict[str, int]:
             # put two workers on the same page — one wasted call against our
             # Sentinel rate ceiling. The task body is idempotent so nothing
             # corrupts, but a wasted call is still a wasted call.
-            to_defer: list[str] = []
+            to_defer: list[tuple[str, str]] = []
             redefers_skipped = 0
-            for job_id, _source in requeued:
+            for job_id, source in requeued:
                 cur.execute(
                     """
                     SELECT 1
@@ -289,11 +289,11 @@ async def _run_sweep() -> dict[str, int]:
                 if cur.fetchone() is not None:
                     redefers_skipped += 1
                 else:
-                    to_defer.append(job_id)
+                    to_defer.append((job_id, source))
         conn.commit()
 
-    for job_id in to_defer:
-        await fetch_page.defer_async(job_id=job_id)
+    for job_id, source in to_defer:
+        await fetch_page.configure(queue=source).defer_async(job_id=job_id)
 
     result = {
         "stalled_jobs_retried": len(stalled),

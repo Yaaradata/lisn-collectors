@@ -7,10 +7,12 @@ from __future__ import annotations
 
 from collector.contract import SourceCollector
 from collector.sources.sentinel import SentinelCollector
+from collector.sources.sentinel_discovery import SentinelDiscoveryCollector
 
 # name -> instance. Adding eKart is one import and one list entry.
 REGISTRY: dict[str, SourceCollector] = {
     "sentinel": SentinelCollector(),
+    "sentinel_discovery": SentinelDiscoveryCollector(),
 }
 
 

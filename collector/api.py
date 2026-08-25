@@ -11,19 +11,52 @@ These three are operational.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from google.cloud import bigquery
 from pydantic import BaseModel, Field
 
+from collector.admin_reset import (
+    RESET_BQ_TABLES,
+    RESET_CLOUD_SQL_TABLES,
+    RESET_CONFIRM_PHRASE,
+    ResetInProgressError,
+    admin_reset_enabled,
+    collect_live_state,
+    run_reset,
+)
 from collector.app import app as procrastinate_app
 from collector.db import connect
 from collector.sources import get
 from collector.tasks import fetch_page
 
 api = FastAPI(title="LiSN Collectors Request API")
+log = logging.getLogger(__name__)
+
+# Demo frontend (make frontend → :3000) calls this API on :8080. Tokens still
+# must not live in the browser — use gcloud run services proxy for Cloud Run.
+api.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# HARD ALLOWLIST — only these may ever be cleared by
+# DELETE /v1/admin/collector-data (or the deprecated POST /v1/admin/reset alias).
+# Never discover tables dynamically, never pattern-match on names, never
+# iterate information_schema. Re-exported from admin_reset for visibility here.
+ADMIN_RESET_CLOUD_SQL_ALLOWLIST: list[str] = list(RESET_CLOUD_SQL_TABLES)
+ADMIN_RESET_BQ_ALLOWLIST: list[str] = list(RESET_BQ_TABLES)
 
 
 def _jsonable(value: Any) -> Any:
@@ -41,6 +74,22 @@ def _row_dict(columns: tuple[str, ...], row: tuple[Any, ...]) -> dict[str, Any]:
 class CollectBody(BaseModel):
     source: str
     query_spec: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdminResetBody(BaseModel):
+    confirm: str
+    # dry_run defaults TRUE — callers must explicitly ask for a real reset.
+    dry_run: bool = True
+    # Resetting mid-run leaves workers writing into emptied tables.
+    force: bool = False
+
+
+def _caller_identity(request: Request) -> str:
+    return (
+        request.headers.get("x-goog-authenticated-user-email")
+        or request.headers.get("x-forwarded-email")
+        or (request.client.host if request.client else "unknown")
+    )
 
 
 def _page_key_count(payload: dict[str, Any]) -> int:
@@ -106,7 +155,9 @@ def collect(body: CollectBody) -> dict[str, Any]:
 
     with procrastinate_app.open():
         for job_id in job_ids:
-            fetch_page.defer(job_id=str(job_id))
+            # Queue name == source name (contract). Discovery and enrichment
+            # workers listen on different queues; defer must match.
+            fetch_page.configure(queue=body.source).defer(job_id=str(job_id))
 
     total_keys = sum(_page_key_count(page.payload) for page in pages)
     return {
@@ -130,7 +181,217 @@ def request_counts(request_id: str) -> dict[str, Any]:
                 (request_id,),
             )
             counts = {status: count for status, count in cur.fetchall()}
-    return {"request_id": request_id, "counts": counts}
+            cur.execute(
+                """
+                SELECT coalesce(sum(record_count), 0)::int
+                FROM collector_job
+                WHERE request_id = %s::uuid
+                """,
+                (request_id,),
+            )
+            records = int(cur.fetchone()[0])
+    return {"request_id": request_id, "counts": counts, "records": records}
+
+
+@api.get(
+    "/v1/requests/{request_id}/results",
+    summary="Concrete landing proof for one collect request",
+)
+def request_results(request_id: str) -> dict[str, Any]:
+    """Pages / GCS / BigQuery / unloaded for a single request — not inferred."""
+    project = os.environ.get("PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    region = os.environ.get("REGION", "asia-south1")
+
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT source, total_pages
+                FROM collector_request
+                WHERE request_id = %s::uuid
+                """,
+                (request_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="request not found")
+            source, total_pages = row[0], int(row[1])
+
+            cur.execute(
+                """
+                SELECT status, count(*)::int
+                FROM collector_job
+                WHERE request_id = %s::uuid
+                GROUP BY status
+                """,
+                (request_id,),
+            )
+            by_status = {status: count for status, count in cur.fetchall()}
+            done = int(by_status.get("done", 0))
+
+            cur.execute(
+                """
+                SELECT count(*)::int
+                FROM raw_manifest m
+                JOIN collector_job j ON j.job_id = m.job_id
+                WHERE j.request_id = %s::uuid
+                """,
+                (request_id,),
+            )
+            gcs_objects = int(cur.fetchone()[0])
+
+            cur.execute(
+                """
+                SELECT count(*)::int
+                FROM collector_job
+                WHERE request_id = %s::uuid
+                  AND raw_written_at IS NOT NULL
+                  AND loaded_at IS NULL
+                """,
+                (request_id,),
+            )
+            unloaded = int(cur.fetchone()[0])
+
+            cur.execute(
+                """
+                SELECT page_no, status, owner, record_count,
+                       raw_written_at, loaded_at
+                FROM collector_job
+                WHERE request_id = %s::uuid
+                ORDER BY page_no
+                LIMIT 5
+                """,
+                (request_id,),
+            )
+            recent_jobs = [
+                {
+                    "page_no": r[0],
+                    "status": r[1],
+                    "owner": r[2],
+                    "record_count": r[3],
+                    "raw_written_at": r[4].isoformat() if r[4] else None,
+                    "loaded_at": r[5].isoformat() if r[5] else None,
+                }
+                for r in cur.fetchall()
+            ]
+
+    bq_rows: int | None = None
+    bq_distinct: int | None = None
+    bq_table: str | None = None
+    if project:
+        if source == "sentinel":
+            bq_table = f"{project}.sentinel_raw.incidents"
+            id_col = "id"
+        elif source == "sentinel_discovery":
+            bq_table = f"{project}.sentinel_raw.discovered_ids"
+            id_col = "incident_id"
+        else:
+            bq_table = None
+            id_col = "id"
+        if bq_table:
+            client = bigquery.Client(project=project, location=region)
+            try:
+                qrow = list(
+                    client.query(
+                        f"""
+                        SELECT count(*) AS n,
+                               count(DISTINCT {id_col}) AS d
+                        FROM `{bq_table}`
+                        WHERE _request_id = @rid
+                        """,
+                        job_config=bigquery.QueryJobConfig(
+                            query_parameters=[
+                                bigquery.ScalarQueryParameter(
+                                    "rid", "STRING", request_id
+                                ),
+                            ]
+                        ),
+                        location=region,
+                    ).result()
+                )[0]
+                bq_rows = int(qrow.n)
+                bq_distinct = int(qrow.d)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"BigQuery results failed: {exc}",
+                ) from exc
+
+    return {
+        "request_id": request_id,
+        "source": source,
+        "pages": {"done": done, "total": total_pages, "by_status": by_status},
+        "gcs_objects": gcs_objects,
+        "bigquery_rows": bq_rows,
+        "bigquery_distinct": bq_distinct,
+        "bigquery_table": bq_table,
+        "unloaded": unloaded,
+        "recent_jobs": recent_jobs,
+    }
+
+
+@api.get(
+    "/v1/discovered/pending",
+    summary="Discovered IDs not yet in incidents_current (bridge)",
+    description=(
+        "Runs the LiSN bridge query (sql/008_discovery_to_enrich.sql): ids in "
+        "discovered_ids_latest that are absent from incidents_current. Used by "
+        "the demo UI Stage 2 before enrichment."
+    ),
+)
+def discovered_pending(
+    limit: int = Query(1000, ge=1, le=50_000),
+) -> dict[str, Any]:
+    project = os.environ.get("PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    if not project:
+        raise HTTPException(status_code=500, detail="PROJECT unset")
+    region = os.environ.get("REGION", "asia-south1")
+    # Same seam as sql/008_discovery_to_enrich.sql — business decision stays in SQL.
+    bridge_from = f"""
+        FROM `{project}.sentinel_core.discovered_ids_latest` AS d
+        LEFT JOIN `{project}.sentinel_core.incidents_current` AS i
+          ON i.id = d.incident_id
+        WHERE i.id IS NULL
+    """
+    client = bigquery.Client(project=project, location=region)
+    try:
+        pending_total = int(
+            list(
+                client.query(
+                    f"SELECT count(*) AS n {bridge_from}",
+                    location=region,
+                ).result()
+            )[0].n
+        )
+        rows = list(
+            client.query(
+                f"""
+                SELECT d.incident_id
+                {bridge_from}
+                ORDER BY d.incident_id
+                LIMIT @limit
+                """,
+                job_config=bigquery.QueryJobConfig(
+                    query_parameters=[
+                        bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                    ]
+                ),
+                location=region,
+            ).result()
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502,
+            detail=f"discovered/pending BigQuery failed: {exc}",
+        ) from exc
+
+    ids = [str(row.incident_id) for row in rows if row.incident_id is not None]
+    return {
+        "ids": ids,
+        "returned": len(ids),
+        "pending_total": pending_total,
+        "limit": limit,
+    }
 
 
 @api.get("/v1/counts")
@@ -315,3 +576,224 @@ def health_detail() -> dict[str, Any]:
         "unloaded": unloaded,
         "dead": dead,
     }
+
+
+# ---------------------------------------------------------------------------
+# DELETE /v1/admin/collector-data — DESTRUCTIVE (primary)
+# POST   /v1/admin/reset            — deprecated alias; same handler
+#
+# HARD DENYLIST — never clear, truncate, drop, or open for write:
+#
+#   sentinel_mock database — sentinel_incident and sentinel_thread.
+#     This is the SAMPLE DATA the collector reads from. It must survive
+#     untouched. When SENTINEL_MOCK_DSN is available the response reports
+#     live counts and warns only if those counts change across the reset.
+#     Never open sentinel_mock for write from this endpoint.
+#
+#   procrastinate_workers — NEVER truncate. procrastinate_jobs.worker_id
+#     references it ON DELETE SET NULL. We already killed a live worker this
+#     way: it registered as id 4, we truncated the table, its next fetch_job
+#     tried to write worker_id=4 and hit
+#     "procrastinate_jobs_worker_id_fkey ... Key (worker_id)=(4) is not present"
+#     and the container exited(1). An HTTP endpoint cannot stop Cloud Run jobs,
+#     so this path must be safe to call while workers are running — delete only
+#     Procrastinate jobs that are not status='doing'.
+#
+#   Any table, bucket, dataset or resource belonging to Clariverse or anything
+#     else in this project outside the HARD ALLOWLIST
+#     (ADMIN_RESET_CLOUD_SQL_ALLOWLIST / ADMIN_RESET_BQ_ALLOWLIST / raw/ prefix).
+# ---------------------------------------------------------------------------
+
+
+def _admin_clear_collector_data(
+    *,
+    confirm: str,
+    dry_run: bool,
+    force: bool,
+    request: Request,
+) -> dict[str, Any]:
+    """Shared body for DELETE collector-data and deprecated POST reset."""
+    # Kill switch: turn off for a real pilot without a code change.
+    if not admin_reset_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "admin collector-data clear is disabled in this environment "
+                "(set ALLOW_ADMIN_RESET=1 to enable)"
+            ),
+        )
+
+    if confirm != RESET_CONFIRM_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f'confirm must be exactly "{RESET_CONFIRM_PHRASE}" '
+                "(nothing was touched)"
+            ),
+        )
+
+    caller = _caller_identity(request)
+    try:
+        return run_reset(dry_run=dry_run, force=force, caller=caller)
+    except ResetInProgressError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    "collector_job has in_progress rows; "
+                    "pass force=true to reset anyway"
+                ),
+                "in_progress": exc.count,
+                "job_ids": exc.job_ids,
+            },
+        ) from exc
+
+
+@api.get(
+    "/v1/admin/state",
+    summary="Live counts of collector stores (read-only)",
+    description=(
+        "Returns current counts for every store DELETE /v1/admin/collector-data "
+        "touches, plus expected sample-data sizes and procrastinate_workers. "
+        "Use after a reset to verify clearance without four manual checks. "
+        "Read-only; does not require ALLOW_ADMIN_RESET."
+    ),
+    tags=["admin"],
+)
+def admin_state() -> dict[str, Any]:
+    warnings: list[str] = []
+    return collect_live_state(warnings)
+
+
+@api.get(
+    "/v1/admin/sample-ids",
+    summary="Sample incident IDs from BigQuery landing table",
+    description=(
+        "Returns distinct incident ids from sentinel_raw.incidents for the "
+        "demo UI 'Load sample IDs' button. Same Cloud Run auth as the rest of "
+        "the API — not a public shortcut."
+    ),
+    tags=["admin"],
+)
+def admin_sample_ids(
+    source: str = Query("sentinel", description="Landing source (sentinel only)"),
+    limit: int = Query(1000, ge=1, le=5000),
+) -> dict[str, Any]:
+    if source != "sentinel":
+        raise HTTPException(
+            status_code=400,
+            detail=f"sample-ids supports source=sentinel only, got {source!r}",
+        )
+    project = os.environ.get("PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    if not project:
+        raise HTTPException(status_code=500, detail="PROJECT unset")
+    region = os.environ.get("REGION", "asia-south1")
+    table = f"`{project}.sentinel_raw.incidents`"
+    client = bigquery.Client(project=project, location=region)
+    try:
+        rows = list(
+            client.query(
+                f"""
+                SELECT DISTINCT id
+                FROM {table}
+                WHERE id IS NOT NULL
+                ORDER BY id
+                LIMIT @limit
+                """,
+                job_config=bigquery.QueryJobConfig(
+                    query_parameters=[
+                        bigquery.ScalarQueryParameter("limit", "INT64", limit),
+                    ]
+                ),
+                location=region,
+            ).result()
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502,
+            detail=f"BigQuery sample-ids failed: {exc}",
+        ) from exc
+
+    ids = [str(row.id) for row in rows if row.id is not None]
+    if not ids:
+        return {
+            "source": source,
+            "key_type": "incident_ids",
+            "ids": [],
+            "count": 0,
+            "message": (
+                "sentinel_raw.incidents is empty — run a collection or use "
+                "the date mode first"
+            ),
+        }
+    return {
+        "source": source,
+        "key_type": "incident_ids",
+        "ids": ids,
+        "count": len(ids),
+    }
+
+
+@api.delete(
+    "/v1/admin/collector-data",
+    summary="Delete collector output data (preferred)",
+    description=(
+        "Clears collector *output* only (Cloud SQL allowlist, GCS raw/, BQ "
+        "landing tables). Safe with workers running — never truncates "
+        "procrastinate_workers; never opens sentinel_mock.\n\n"
+        "Query parameters: confirm (required), dry_run (default true), force "
+        "(default false).\n\n"
+        "Trade-off: query parameters appear in Cloud Run request logs, so the "
+        "confirm token is logged. The deprecated POST body variant does not "
+        "have this property. This is acceptable because the token is a typo "
+        "guard, not a secret — the real protection is Cloud Run authentication "
+        "plus ALLOW_ADMIN_RESET.\n\n"
+        "Response includes success=true only when warnings is empty; after "
+        "counts are always re-read from the real store."
+    ),
+    tags=["admin"],
+)
+def delete_collector_data(
+    request: Request,
+    confirm: str = Query(
+        ...,
+        description='Must be exactly "reset-collector-data"',
+    ),
+    dry_run: bool = Query(
+        True,
+        description="Default true — pass false to actually delete",
+    ),
+    force: bool = Query(
+        False,
+        description="Override in_progress refusal",
+    ),
+) -> dict[str, Any]:
+    # confirm is a query param → visible in Cloud Run request logs. That is a
+    # typo guard, not a secret; auth + ALLOW_ADMIN_RESET are the real controls.
+    return _admin_clear_collector_data(
+        confirm=confirm,
+        dry_run=dry_run,
+        force=force,
+        request=request,
+    )
+
+
+@api.post(
+    "/v1/admin/reset",
+    summary="[Deprecated] Alias for DELETE /v1/admin/collector-data",
+    description=(
+        "DEPRECATED — use DELETE /v1/admin/collector-data instead. Kept as an "
+        "alias so existing scripts and tests keep working. Same allowlist, "
+        "guards, and response as the DELETE route; parameters are in the JSON "
+        "body (confirm, dry_run, force)."
+    ),
+    deprecated=True,
+    tags=["admin"],
+)
+def admin_reset(body: AdminResetBody, request: Request) -> dict[str, Any]:
+    return _admin_clear_collector_data(
+        confirm=body.confirm,
+        dry_run=body.dry_run,
+        force=body.force,
+        request=request,
+    )

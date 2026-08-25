@@ -1,0 +1,34 @@
+{
+  "access": [
+    {
+      "role": "WRITER",
+      "specialGroup": "projectWriters"
+    },
+    {
+      "role": "OWNER",
+      "specialGroup": "projectOwners"
+    },
+    {
+      "role": "OWNER",
+      "userByEmail": "ranjith.bk@yaaralabs.ai"
+    },
+    {
+      "role": "READER",
+      "specialGroup": "projectReaders"
+    }
+  ],
+  "creationTime": "1787220239469",
+  "datasetReference": {
+    "datasetId": "sentinel_core",
+    "projectId": "clariversev1"
+  },
+  "description": "Sentinel current view \u2014 one row per entity, latest wins; this is what LiSN reads",
+  "etag": "QdlfqChzQL3XHW7wMZyVUg==",
+  "id": "clariversev1:sentinel_core",
+  "kind": "bigquery#dataset",
+  "lastModifiedTime": "1787220239469",
+  "location": "asia-south1",
+  "maxTimeTravelHours": "168",
+  "selfLink": "https://bigquery.googleapis.com/bigquery/v2/projects/clariversev1/datasets/sentinel_core",
+  "type": "DEFAULT"
+}

@@ -102,43 +102,10 @@ hard_kill_pid() {
 }
 
 do_reset() {
-  ok "RESET - truncating collector state, GCS sentinel raw prefix, BQ landing table"
-
-  psql "$COLLECTOR_DSN" -v ON_ERROR_STOP=1 <<'SQL'
-TRUNCATE TABLE raw_manifest, collector_job, collector_request RESTART IDENTITY CASCADE;
-DO $$
-BEGIN
-  IF to_regclass('public.collector_control') IS NOT NULL THEN
-    TRUNCATE TABLE collector_control RESTART IDENTITY CASCADE;
-  END IF;
-END $$;
-DELETE FROM procrastinate_periodic_defers;
-DELETE FROM procrastinate_events;
-DELETE FROM procrastinate_jobs;
-DELETE FROM procrastinate_workers;
-SQL
-
-  "$PY" - <<'PY'
-import os
-from google.cloud import storage
-
-bucket_name = os.environ["RAW_BUCKET"]
-prefix = "raw/source=sentinel/"
-client = storage.Client()
-bucket = client.bucket(bucket_name)
-n = 0
-for blob in client.list_blobs(bucket_name, prefix=prefix):
-    blob.delete()
-    n += 1
-print(f"deleted {n} GCS objects under gs://{bucket_name}/{prefix}")
-PY
-
-  bq query \
-    --project_id="$PROJECT" \
-    --use_legacy_sql=false \
-    --nouse_cache \
-    "TRUNCATE TABLE \`${PROJECT}.sentinel_raw.incidents\`"
-  ok "RESET complete"
+  # Shared path: stop workers → wait → truncate Procrastinate (FK-safe) →
+  # collector tables → GCS/BQ. See scripts/33_reset_collector.sh header.
+  bash scripts/33_reset_collector.sh
+  ok "RESET complete — demo will start its own local worker in ensure_stack"
 }
 
 ensure_stack() {

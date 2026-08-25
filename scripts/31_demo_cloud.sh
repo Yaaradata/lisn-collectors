@@ -106,46 +106,10 @@ api_curl() {
 }
 
 do_reset() {
-  ok "RESET — stop workers, truncate collector/GCS/BQ, restart workers"
-  bash scripts/28_workers_control.sh stop || warn "workers stop non-zero"
-
-  psql "$COLLECTOR_DSN" -v ON_ERROR_STOP=1 <<'SQL'
-TRUNCATE TABLE raw_manifest, collector_job, collector_request RESTART IDENTITY CASCADE;
-DO $$
-BEGIN
-  IF to_regclass('public.collector_control') IS NOT NULL THEN
-    TRUNCATE TABLE collector_control RESTART IDENTITY CASCADE;
-  END IF;
-END $$;
-TRUNCATE procrastinate_periodic_defers, procrastinate_events,
-         procrastinate_jobs, procrastinate_workers RESTART IDENTITY CASCADE;
-SQL
-
-  "$PY" - <<'PY'
-import os
-from google.cloud import storage
-bucket_name = os.environ["RAW_BUCKET"]
-prefix = "raw/source=sentinel/"
-client = storage.Client()
-n = 0
-for blob in client.list_blobs(bucket_name, prefix=prefix):
-    blob.delete()
-    n += 1
-print(f"deleted {n} GCS objects under gs://{bucket_name}/{prefix}")
-PY
-
-  "$PY" - <<'PY'
-import os
-from google.cloud import bigquery
-p = os.environ["PROJECT"]
-bigquery.Client(project=p).query(f"TRUNCATE TABLE `{p}.sentinel_raw.incidents`").result()
-print("truncated sentinel_raw.incidents ok")
-PY
-
-  bash scripts/28_workers_control.sh start || fail "workers start after reset"
-  ok "RESET complete"
+  # Shared path: cancel Cloud Run executions → wait idle → truncate (FK-safe).
+  # See scripts/33_reset_collector.sh header for why workers must stop first.
+  bash scripts/33_reset_collector.sh --restart
 }
-
 ensure_proxy() {
   ok "Ensuring Cloud SQL Auth Proxy on 5432 (psql only — workers are remote)"
   if ! (echo >/dev/tcp/127.0.0.1/5432) >/dev/null 2>&1; then

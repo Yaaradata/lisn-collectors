@@ -39,6 +39,9 @@ fi
 
 GRACE_PERIOD="120s"
 SENTINEL_ARGS="-m,procrastinate,worker,-q,sentinel,-c,1,--delete-jobs,never"
+# Discovery is sequential: each page's cursor comes from the previous response.
+# Enrichment fans out because pages are independent; discovery cannot, so --tasks=1.
+DISCOVERY_ARGS="-m,procrastinate,worker,-q,sentinel_discovery,-c,1,--delete-jobs,never"
 MAINT_ARGS="-m,procrastinate,worker,-q,maintenance,-c,1,--delete-jobs,never"
 
 worker_env() {
@@ -110,6 +113,24 @@ case "$DEPLOY_SURFACE" in
       --args="$SENTINEL_ARGS" \
       --quiet
 
+
+    # instances=1: discovery cannot fan out; each cursor page depends on the prior response.
+    ok "Deploy wp-col-sentinel-discovery (instances=1)"
+    # shellcheck disable=SC2086
+    ${WP_CMD} wp-col-sentinel-discovery \
+      --project="$PROJECT" \
+      --region="$REGION" \
+      --image="$IMG" \
+      --service-account="$SA_WORKER" \
+      --add-cloudsql-instances="$CONN" \
+      --set-secrets="COLLECTOR_DSN=collector-dsn:latest" \
+      --set-env-vars="$(worker_env sentinel_discovery)" \
+      --instances=1 \
+      --grace-period="$GRACE_PERIOD" \
+      --command=python \
+      --args="$DISCOVERY_ARGS" \
+      --quiet
+
     ok "Deploy wp-col-maintenance (instances=1)"
     # shellcheck disable=SC2086
     ${WP_CMD} wp-col-maintenance \
@@ -127,7 +148,7 @@ case "$DEPLOY_SURFACE" in
       --quiet
 
     ok "VERIFY — instance counts"
-    for wp in wp-col-sentinel:3 wp-col-maintenance:1; do
+    for wp in wp-col-sentinel:3 wp-col-sentinel-discovery:1 wp-col-maintenance:1; do
       name="${wp%%:*}"
       expect="${wp##*:}"
       actual="$(
@@ -190,6 +211,27 @@ case "$DEPLOY_SURFACE" in
       --args="$SENTINEL_ARGS" \
       --quiet
 
+
+    # --tasks=1: enrichment fans out because pages are independent. Discovery
+    # cannot, because each page's cursor comes from the previous response.
+    # Parallel discovery tasks would duplicate cursor walks.
+    ok "Deploy col-sentinel-discovery (tasks=1 parallelism=1)"
+    gcloud run jobs deploy col-sentinel-discovery \
+      --project="$PROJECT" \
+      --region="$REGION" \
+      --image="$IMG" \
+      --service-account="$SA_WORKER" \
+      --set-cloudsql-instances="$CONN" \
+      --set-secrets="COLLECTOR_DSN=collector-dsn:latest" \
+      --set-env-vars="$(worker_env sentinel_discovery)" \
+      --tasks=1 \
+      --parallelism=1 \
+      --task-timeout=86400s \
+      --max-retries=0 \
+      --command=python \
+      --args="$DISCOVERY_ARGS" \
+      --quiet
+
     ok "Deploy col-maintenance (tasks=1 parallelism=1)"
     gcloud run jobs deploy col-maintenance \
       --project="$PROJECT" \
@@ -208,7 +250,7 @@ case "$DEPLOY_SURFACE" in
       --quiet
 
     ok "VERIFY — task counts"
-    for job_spec in col-sentinel:3 col-maintenance:1; do
+    for job_spec in col-sentinel:3 col-sentinel-discovery:1 col-maintenance:1; do
       name="${job_spec%%:*}"
       expect="${job_spec##*:}"
       tasks="$(
@@ -231,7 +273,7 @@ case "$DEPLOY_SURFACE" in
     done
 
     ok "Start executions if none are already running (idempotent)"
-    for job in col-sentinel col-maintenance; do
+    for job in col-sentinel col-sentinel-discovery col-maintenance; do
       if job_has_active_execution "$job"; then
         warn "${job}: active execution already running — not starting a duplicate"
       else
@@ -253,7 +295,7 @@ esac
 # ---------------------------------------------------------------------------
 # VERIFY — live workers via API + DB
 # ---------------------------------------------------------------------------
-ok "Poll GET /v1/health/detail until live_workers >= 4 (timeout 120s)"
+ok "Poll GET /v1/health/detail until live_workers >= 5 (timeout 120s)"
 deadline=$((SECONDS + 120))
 DETAIL=""
 LIVE=0
@@ -276,10 +318,10 @@ except Exception:
   sleep 5
 done
 
-if (( LIVE < 4 )); then
+if (( LIVE < 5 )); then
   echo "Last /v1/health/detail:"
   echo "$DETAIL"
-  fail "timed out waiting for live_workers >= 4 (got ${LIVE})"
+  fail "timed out waiting for live_workers >= 5 (got ${LIVE})"
 fi
 
 ok "live_workers=${LIVE}"
@@ -307,8 +349,8 @@ ROW_N="$(
     "SELECT count(*) FROM procrastinate_workers WHERE now() - last_heartbeat < interval '60 seconds';"
 )"
 echo "heartbeating_workers(<60s)=${ROW_N}"
-if (( ROW_N < 4 )); then
-  fail "expected >= 4 heartbeating procrastinate_workers rows, got ${ROW_N}"
+if (( ROW_N < 5 )); then
+  fail "expected >= 5 heartbeating procrastinate_workers rows, got ${ROW_N}"
 fi
 
 ok "deploy-workers complete (DEPLOY_SURFACE=${DEPLOY_SURFACE})"

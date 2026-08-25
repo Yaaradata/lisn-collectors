@@ -109,48 +109,15 @@ done
 (( LIVE >= 4 )) || gate_fail "live_workers >= 4 timed out (got ${LIVE})"
 
 # ---------------------------------------------------------------------------
-# Reset state — empty tables / prefixes so the run is comparable to Pass 1
+# Reset state — empty tables / prefixes so the run is comparable to Pass 1.
+# Workers must be cancelled and idle BEFORE truncating procrastinate_workers
+# (FK: procrastinate_jobs.worker_id → procrastinate_workers.id). Shared path:
+# scripts/33_reset_collector.sh
 # ---------------------------------------------------------------------------
-ok "Stop workers before truncating Procrastinate state"
-bash scripts/28_workers_control.sh stop || warn "workers stop returned non-zero"
+ok "Reset collector DB / GCS raw / BigQuery landing (stop workers first)"
+bash scripts/33_reset_collector.sh --restart || gate_fail "reset failed"
 
-ok "Reset collector DB / GCS raw / BigQuery landing"
-psql "$COLLECTOR_DSN" -v ON_ERROR_STOP=1 <<'SQL' || gate_fail "truncate collector tables"
-TRUNCATE raw_manifest, collector_job, collector_request RESTART IDENTITY CASCADE;
-DO $$
-BEGIN
-  IF to_regclass('public.collector_control') IS NOT NULL THEN
-    EXECUTE 'TRUNCATE collector_control RESTART IDENTITY CASCADE';
-  END IF;
-END$$;
-TRUNCATE procrastinate_periodic_defers, procrastinate_events,
-         procrastinate_jobs, procrastinate_workers RESTART IDENTITY CASCADE;
-SQL
-
-"$PY" - <<'PY' || gate_fail "clear GCS raw/"
-import os
-from google.cloud import storage
-bucket = os.environ.get("BUCKET") or os.environ["RAW_BUCKET"]
-client = storage.Client(project=os.environ.get("PROJECT"))
-n = 0
-for blob in client.list_blobs(bucket, prefix="raw/"):
-    blob.delete()
-    n += 1
-print(f"deleted_gcs_objects={n}")
-PY
-
-"$PY" - <<'PY' || gate_fail "truncate BigQuery"
-import os
-from google.cloud import bigquery
-project = os.environ["PROJECT"]
-client = bigquery.Client(project=project)
-client.query(f"TRUNCATE TABLE `{project}.sentinel_raw.incidents`").result()
-print("truncated sentinel_raw.incidents ok")
-PY
-
-# Workers were pruned by truncate — restart so they re-register.
-ok "Start deployed workers (fresh heartbeats)"
-bash scripts/28_workers_control.sh start || gate_fail "workers re-start"
+ok "Poll /v1/health/detail until live_workers >= 4 after reset (120s)"
 deadline=$((SECONDS + 120))
 LIVE=0
 while (( SECONDS < deadline )); do

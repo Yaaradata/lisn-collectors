@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,11 @@ _FAULTS: set[str] = set()
 # Request counter for Sprint 5 rate measurement (scripts/30_measure_rate.sh).
 # In-memory on purpose — one mock instance; a rolling deploy briefly doubles it.
 _REQUESTS: int = 0
+
+# Real Sentinel console caps Create/Update date ranges at 15 days.
+MAX_DISCOVER_WINDOW = timedelta(days=15)
+DISCOVER_LIMIT_DEFAULT = 1000
+DISCOVER_LIMIT_MAX = 5000
 
 
 def _load_dotenv() -> None:
@@ -138,6 +143,10 @@ WHERE
     AND i.id = ANY(%(incident_ids)s)
   )
   OR (
+    %(by_order_item)s
+    AND i.order_item_id = ANY(%(order_item_ids)s)
+  )
+  OR (
     %(by_order)s
     AND i.order_id = ANY(%(order_ids)s)
   )
@@ -147,7 +156,120 @@ ORDER BY i.id, t.created_at NULLS LAST
 
 class SearchRequest(BaseModel):
     incident_ids: list[str] = Field(default_factory=list)
+    # JSON may send ints, floats, or digit-strings; converted to numeric below.
+    order_item_ids: list[Any] = Field(default_factory=list)
     order_ids: list[str] = Field(default_factory=list)
+
+
+class DiscoverRequest(BaseModel):
+    """Filters matching the real Sentinel console Download screen."""
+
+    updated_from: datetime | None = None
+    updated_to: datetime | None = None
+    created_from: datetime | None = None
+    created_to: datetime | None = None
+    statuses: list[str] = Field(default_factory=list)
+    issue_names: list[str] = Field(default_factory=list)
+    cursor: str | None = None
+    limit: int = DISCOVER_LIMIT_DEFAULT
+
+
+def _as_order_item_id(value: Any) -> float:
+    # order_item_id is numeric in sentinel_incident (see sql/002_sentinel_mock.sql).
+    # Convert JSON body values explicitly rather than relying on implicit casting
+    # in PostgreSQL / psycopg — callers may send int, float, or string.
+    if isinstance(value, bool):
+        raise HTTPException(
+            status_code=400,
+            detail=f"order_item_id must be numeric, got bool {value!r}",
+        )
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"order_item_id must be numeric, got {value!r}",
+            ) from exc
+    raise HTTPException(
+        status_code=400,
+        detail=f"order_item_id must be numeric, got {type(value).__name__}",
+    )
+
+
+def _ensure_aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _validate_discover_window(
+    name: str, start: datetime | None, end: datetime | None
+) -> tuple[datetime, datetime] | None:
+    if start is None and end is None:
+        return None
+    if start is None or end is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name}_from and {name}_to must both be set for a {name} window",
+        )
+    start_a = _ensure_aware(start)
+    end_a = _ensure_aware(end)
+    if end_a < start_a:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name} window end must be on or after start",
+        )
+    # The real Sentinel console caps date ranges at 15 days. We enforce it so
+    # that a caller assuming otherwise fails loudly here rather than silently
+    # getting truncated results from the real system later.
+    if end_a - start_a > MAX_DISCOVER_WINDOW:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{name} window exceeds the 15-day limit "
+                f"(got {(end_a - start_a).days} days)"
+            ),
+        )
+    return start_a, end_a
+
+
+# Discovery answers "which" (ids only). Enrichment (/search) answers "what".
+# Returning bodies here would duplicate the enrichment path with none of its
+# rate control or paging.
+#
+# Keyset on id (WHERE id > cursor), not OFFSET: OFFSET paging over a moving
+# dataset skips and repeats rows. Discovery runs against a live system where
+# incidents are being created and updated while we page.
+DISCOVER_SQL = """
+SELECT i.id
+FROM sentinel_incident AS i
+WHERE
+  (
+    NOT %(by_updated)s
+    OR (i.updated_on >= %(updated_from)s AND i.updated_on <= %(updated_to)s)
+  )
+  AND (
+    NOT %(by_created)s
+    OR (i.created_at >= %(created_from)s AND i.created_at <= %(created_to)s)
+  )
+  AND (
+    NOT %(by_status)s
+    OR i.status_status = ANY(%(statuses)s)
+  )
+  AND (
+    NOT %(by_issue)s
+    OR i.issue_name = ANY(%(issue_names)s)
+  )
+  AND (
+    NOT %(by_cursor)s
+    OR i.id > %(cursor)s
+  )
+ORDER BY i.id
+LIMIT %(fetch_limit)s
+"""
 
 
 @asynccontextmanager
@@ -183,17 +305,19 @@ def search_incidents(body: SearchRequest, request: Request) -> dict[str, Any]:
     _REQUESTS += 1
 
     incident_ids = list(body.incident_ids or [])
+    # Explicit numeric conversion — see _as_order_item_id.
+    order_item_ids = [_as_order_item_id(v) for v in (body.order_item_ids or [])]
     order_ids = list(body.order_ids or [])
 
     # Queries must be per-key. A generic query is not allowed, and this
     # rejection is what stops that rule being bypassed by accident.
-    if not incident_ids and not order_ids:
+    if not incident_ids and not order_item_ids and not order_ids:
         raise HTTPException(
             status_code=400,
-            detail="incident_ids or order_ids required",
+            detail="incident_ids, order_item_ids or order_ids required",
         )
 
-    supplied = len(incident_ids) + len(order_ids)
+    supplied = len(incident_ids) + len(order_item_ids) + len(order_ids)
     # Multi Track states this limit on its own screen. If the collector's
     # paging logic ever breaks, this makes it fail loudly instead of silently
     # truncating.
@@ -205,7 +329,7 @@ def search_incidents(body: SearchRequest, request: Request) -> dict[str, Any]:
 
     # Exists so we can demonstrate retry with backoff on demand. In-memory on
     # purpose so a restart clears it.
-    requested = set(incident_ids) | set(order_ids)
+    requested = set(incident_ids) | {str(x) for x in order_item_ids} | set(order_ids)
     if requested & _FAULTS:
         raise HTTPException(status_code=500, detail="injected fault")
 
@@ -217,6 +341,9 @@ def search_incidents(body: SearchRequest, request: Request) -> dict[str, Any]:
                 {
                     "by_incident": bool(incident_ids),
                     "incident_ids": incident_ids or [""],
+                    "by_order_item": bool(order_item_ids),
+                    # Placeholder when unused: numeric ANY needs a typed empty-safe value.
+                    "order_item_ids": order_item_ids or [-1.0],
                     "by_order": bool(order_ids),
                     "order_ids": order_ids or [""],
                 },
@@ -225,6 +352,83 @@ def search_incidents(body: SearchRequest, request: Request) -> dict[str, Any]:
 
     incidents = [_row_to_export(row) for row in rows]
     return {"incidents": incidents, "count": len(incidents)}
+
+
+@app.post("/v1/incidents/discover")
+def discover_incidents(body: DiscoverRequest, request: Request) -> dict[str, Any]:
+    """Console-shaped discovery: which incident ids match filters + time window."""
+    global _REQUESTS
+    _REQUESTS += 1
+
+    updated = _validate_discover_window(
+        "updated", body.updated_from, body.updated_to
+    )
+    created = _validate_discover_window(
+        "created", body.created_from, body.created_to
+    )
+
+    # Discovery must be bounded in time. An unbounded discovery over the whole
+    # incident history is exactly the unbounded query the per-key rule exists
+    # to prevent.
+    if updated is None and created is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "at least one time window required "
+                "(updated_from/updated_to or created_from/created_to)"
+            ),
+        )
+
+    limit = body.limit
+    if limit < 1 or limit > DISCOVER_LIMIT_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"limit must be between 1 and {DISCOVER_LIMIT_MAX}, got {limit}",
+        )
+
+    statuses = list(body.statuses or [])
+    issue_names = list(body.issue_names or [])
+    cursor = body.cursor
+
+    # Placeholder timestamps when a window is unused (predicate gated off).
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    updated_from, updated_to = updated if updated else (epoch, epoch)
+    created_from, created_to = created if created else (epoch, epoch)
+
+    pool: ConnectionPool = request.app.state.pool
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                DISCOVER_SQL,
+                {
+                    "by_updated": updated is not None,
+                    "updated_from": updated_from,
+                    "updated_to": updated_to,
+                    "by_created": created is not None,
+                    "created_from": created_from,
+                    "created_to": created_to,
+                    "by_status": bool(statuses),
+                    "statuses": statuses or [""],
+                    "by_issue": bool(issue_names),
+                    "issue_names": issue_names or [""],
+                    "by_cursor": bool(cursor),
+                    "cursor": cursor or "",
+                    # Fetch one extra to detect has_more without a second count query.
+                    "fetch_limit": limit + 1,
+                },
+            )
+            rows = [r[0] for r in cur.fetchall()]
+
+    has_more = len(rows) > limit
+    incident_ids = rows[:limit]
+    next_cursor = incident_ids[-1] if has_more and incident_ids else None
+
+    return {
+        "incident_ids": incident_ids,
+        "count": len(incident_ids),
+        "next_cursor": next_cursor,
+        "has_more": has_more,
+    }
 
 
 @app.post("/admin/fault/{ident}")

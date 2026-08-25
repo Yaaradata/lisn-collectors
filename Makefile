@@ -1,4 +1,4 @@
-.PHONY: preflight database storage iam registry smoke all trace clean mock-schema mock-schema-verify seed seed-verify mock-run mock-test image deploy-mock collector-schema collector-schema-verify procrastinate-schema-read procrastinate-schema-apply procrastinate-verify test-source test-raw worker api bigquery e2e sweeper sweep-now pause resume drain ks-status failure-demos demo trace-s4 deploy-preflight grant-invoker deploy-services deploy-workers workers-start workers-stop workers-status workers-logs workers-scale e2e-cloud measure-rate demo-cloud trace-s5
+.PHONY: preflight database storage iam registry smoke all trace clean mock-schema mock-schema-verify seed seed-verify mock-run mock-test image deploy-mock collector-schema collector-schema-verify procrastinate-schema-read procrastinate-schema-apply procrastinate-verify test-source test-raw worker api frontend bigquery e2e sweeper sweep-now pause resume drain ks-status failure-demos demo trace-s4 deploy-preflight grant-invoker grant-admin-reset deploy-services deploy-workers workers-start workers-stop workers-restart workers-status workers-logs workers-scale e2e-cloud measure-rate demo-cloud trace-s5 reset two-stage-demo reset-api reset-api-force
 
 preflight:
 	@bash scripts/00_preflight.sh
@@ -59,6 +59,9 @@ workers-start:
 workers-stop:
 	@bash scripts/28_workers_control.sh stop $(SOURCE)
 
+workers-restart:
+	@bash scripts/28_workers_control.sh restart $(SOURCE)
+
 workers-status:
 	@bash scripts/28_workers_control.sh status
 
@@ -67,6 +70,18 @@ workers-logs:
 
 workers-scale:
 	@bash scripts/28_workers_control.sh scale $(SOURCE) $(N)
+
+reset:
+	@bash scripts/33_reset_collector.sh $(if $(RESTART),--restart,)
+
+two-stage-demo:
+	@bash scripts/34_two_stage_demo.sh $(if $(RESET),--reset,) $(if $(AUTO),--auto,)
+
+reset-api:
+	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; : "$${COLLECTOR_API_URL:?}"; TOKEN=$$(gcloud auth print-identity-token 2>/dev/null || true); HDR=(); if [[ -n "$$TOKEN" ]]; then HDR=(-H "Authorization: Bearer $$TOKEN"); fi; URL="$${COLLECTOR_API_URL}/v1/admin/collector-data?confirm=reset-collector-data&dry_run=true"; echo "DELETE $$URL"; curl -sS -X DELETE "$${HDR[@]}" "$$URL" | python -m json.tool'
+
+reset-api-force:
+	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; : "$${COLLECTOR_API_URL:?}"; TOKEN=$$(gcloud auth print-identity-token 2>/dev/null || true); HDR=(); if [[ -n "$$TOKEN" ]]; then HDR=(-H "Authorization: Bearer $$TOKEN"); fi; URL="$${COLLECTOR_API_URL}/v1/admin/collector-data?confirm=reset-collector-data&dry_run=false"; echo "DELETE $$URL"; curl -sS -X DELETE "$${HDR[@]}" "$$URL" | python -m json.tool'
 
 e2e-cloud:
 	@bash scripts/29_e2e_cloud.sh
@@ -122,8 +137,14 @@ sweep-now:
 api:
 	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; export PYTHONPATH=.; if [[ -x .venv/Scripts/python.exe ]]; then PY=.venv/Scripts/python.exe; elif [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python3; fi; "$$PY" -m uvicorn collector.api:api --port 8080 --reload'
 
+# Demo UI stand-in for LiSN (Pass 1: connection + status bar). No build step.
+frontend:
+	@echo "LiSN Collector Console → http://127.0.0.1:3000/"
+	@echo "API default: http://localhost:8080  (use gcloud run services proxy for Cloud Run)"
+	@python -m http.server 3000 --directory frontend
+
 bigquery:
-	@bash scripts/08_bigquery.sh
+	@bash scripts/08_bigquery.sh $(SOURCE)
 
 e2e:
 	@bash scripts/09_e2e.sh
@@ -161,6 +182,9 @@ deploy-preflight:
 
 grant-invoker:
 	@bash scripts/24_grant_invoker.sh
+
+grant-admin-reset:
+	@bash scripts/35_grant_admin_reset.sh
 
 clean:
 	@echo "[clean] non-destructive cleanup"

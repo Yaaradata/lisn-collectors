@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LiSN — Collector Console</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="header">
+        <div class="brand">
+          <p class="eyebrow">Stand-in for Usha’s system</p>
+          <h1>LiSN — Collector Console</h1>
+          <p class="subtitle">
+            This page pretends to be LiSN: the system that asks our collector for
+            Sentinel data. It exists so a non-technical viewer can see how
+            requests are made — without watching someone type curl.
+          </p>
+        </div>
+      </header>
+
+      <main class="main">
+        <section class="card connection" aria-labelledby="connection-heading">
+          <h2 id="connection-heading">API connection</h2>
+
+          <label class="field" for="api-base">
+            <span class="field-label">API base URL</span>
+            <input
+              id="api-base"
+              type="url"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="http://localhost:8080"
+            />
+          </label>
+
+          <p class="hint">
+            The deployed Cloud Run API requires authentication. Do not put
+            identity tokens in this page, and do not make the API publicly
+            invokable. Reach it with a local proxy so the browser talks to
+            localhost and gcloud attaches the token:
+          </p>
+          <pre class="code-block" tabindex="0">gcloud run services proxy collector-api --region=asia-south1 --port=8080</pre>
+          <p class="hint muted">
+            Then leave the base URL as <code>http://localhost:8080</code>.
+          </p>
+
+          <div class="actions">
+            <button type="button" id="btn-test" class="btn primary">
+              Test connection
+            </button>
+            <div
+              id="health-pill"
+              class="pill idle"
+              role="status"
+              aria-live="polite"
+            >
+              Not tested
+            </div>
+          </div>
+          <pre id="health-body" class="response" hidden></pre>
+        </section>
+
+        <section class="card mode-enrich" aria-labelledby="enrich-heading">
+          <div class="card-head">
+            <p class="mode-tag">Mode 1 · Enrichment</p>
+            <h2 id="enrich-heading">Collect by ID</h2>
+          </div>
+          <p class="explainer">
+            You already know which incidents you want. Paste their IDs and the
+            collector fetches those, 50 at a time.
+          </p>
+
+          <!--
+            The API rejects a request carrying more than one key type, so the
+            UI must enforce exclusivity rather than let the user construct an
+            invalid request.
+          -->
+          <fieldset class="segmented" id="key-type-group">
+            <legend class="field-label">Key type</legend>
+            <div class="segmented-row" role="radiogroup" aria-label="Key type">
+              <label class="segment">
+                <input
+                  type="radio"
+                  name="key-type"
+                  value="incident_ids"
+                  checked
+                />
+                <span>Incident IDs</span>
+              </label>
+              <label class="segment">
+                <input type="radio" name="key-type" value="order_item_ids" />
+                <span>Order Item IDs</span>
+              </label>
+              <label class="segment">
+                <input type="radio" name="key-type" value="order_ids" />
+                <span>Order IDs</span>
+              </label>
+            </div>
+          </fieldset>
+
+          <label class="field" for="id-list">
+            <span class="field-label">IDs</span>
+            <textarea
+              id="id-list"
+              rows="8"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="One ID per line, or comma-separated"
+            ></textarea>
+          </label>
+          <p id="id-count" class="id-count" aria-live="polite">
+            0 IDs · 0 pages at 50 per page
+          </p>
+
+          <div class="actions wrap">
+            <button type="button" id="btn-sample-ids" class="btn ghost">
+              Load sample IDs
+            </button>
+            <button type="button" id="btn-collect" class="btn primary" disabled>
+              Collect
+            </button>
+          </div>
+
+          <!--
+            This rejection is a product rule — the collector never runs
+            unbounded queries — and showing it is more convincing than
+            describing it.
+          -->
+          <p class="demo-link-row">
+            <button type="button" id="btn-invalid" class="linkish">
+              Try an invalid request
+            </button>
+            <span class="muted">
+              (sends <code>{"status":"open"}</code> with no keys)
+            </span>
+          </p>
+
+          <div id="enrich-error" class="error-box dismissible" hidden>
+            <button type="button" class="dismiss" aria-label="Dismiss">×</button>
+            <pre class="error-text"></pre>
+          </div>
+
+          <div id="enrich-progress" class="progress-panel" hidden>
+            <div class="progress-meta">
+              <span id="enrich-request-id" class="mono"></span>
+              <span id="enrich-elapsed" class="muted"></span>
+            </div>
+            <div
+              class="progress-track"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+              id="enrich-bar-wrap"
+            >
+              <div id="enrich-bar" class="progress-fill"></div>
+            </div>
+            <p id="enrich-progress-label" class="progress-label">0 / 0 pages</p>
+            <div class="status-pills" id="enrich-status-pills">
+              <span class="pill idle" data-status="pending">pending 0</span>
+              <span class="pill idle" data-status="in_progress"
+                >in_progress 0</span
+              >
+              <span class="pill idle" data-status="done">done 0</span>
+              <span class="pill idle" data-status="dead">dead 0</span>
+            </div>
+            <p id="enrich-summary" class="summary" hidden></p>
+          </div>
+        </section>
+
+        <section class="card mode-discover" aria-labelledby="discover-heading">
+          <div class="card-head">
+            <p class="mode-tag">Mode 2 · Discovery → Enrichment</p>
+            <h2 id="discover-heading">Collect by Date Range</h2>
+          </div>
+          <p class="explainer">
+            LiSN does not know which incidents exist yet. It asks by filter
+            first, gets IDs back, then asks for those — two separate steps on
+            purpose.
+          </p>
+
+          <div class="stages">
+            <!-- STAGE 1 -->
+            <article class="stage" id="stage-discover" data-stage="1">
+              <header class="stage-head">
+                <span class="stage-num">1</span>
+                <div>
+                  <h3>Discover</h3>
+                  <p class="stage-one-liner">Which incidents match?</p>
+                </div>
+              </header>
+
+              <div class="date-grid">
+                <label class="field" for="updated-from">
+                  <span class="field-label">Updated from (UTC)</span>
+                  <input id="updated-from" type="datetime-local" />
+                </label>
+                <label class="field" for="updated-to">
+                  <span class="field-label">Updated to (UTC)</span>
+                  <input id="updated-to" type="datetime-local" />
+                </label>
+              </div>
+              <p class="hint">
+                Maximum window: 15 days. The real Sentinel console enforces this.
+              </p>
+              <p id="discover-client-error" class="error-box dismissible" hidden>
+                <button type="button" class="dismiss" aria-label="Dismiss">×</button>
+                <pre class="error-text"></pre>
+              </p>
+
+              <fieldset class="issue-fieldset">
+                <legend class="field-label">Issue types (SSI)</legend>
+                <div class="issue-list" id="issue-list">
+                  <!-- filled from SSI names mirrored from mock/reference.py -->
+                </div>
+              </fieldset>
+
+              <div class="actions wrap">
+                <button type="button" id="btn-discover" class="btn primary">
+                  Discover
+                </button>
+              </div>
+
+              <div id="discover-error" class="error-box dismissible" hidden>
+                <button type="button" class="dismiss" aria-label="Dismiss">×</button>
+                <pre class="error-text"></pre>
+              </div>
+              <div id="discover-progress" class="progress-panel" hidden>
+                <div class="progress-meta">
+                  <span id="discover-request-id" class="mono"></span>
+                  <span id="discover-elapsed" class="muted"></span>
+                </div>
+                <div
+                  class="progress-track"
+                  role="progressbar"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow="0"
+                  id="discover-bar-wrap"
+                >
+                  <div id="discover-bar" class="progress-fill"></div>
+                </div>
+                <p id="discover-progress-label" class="progress-label">
+                  0 / 0 pages
+                </p>
+                <div class="status-pills" id="discover-status-pills">
+                  <span class="pill idle" data-status="pending">pending 0</span>
+                  <span class="pill idle" data-status="in_progress"
+                    >in_progress 0</span
+                  >
+                  <span class="pill idle" data-status="done">done 0</span>
+                  <span class="pill idle" data-status="dead">dead 0</span>
+                </div>
+                <p id="discover-summary" class="summary" hidden></p>
+              </div>
+            </article>
+
+            <!-- STAGE 2 -->
+            <article class="stage locked" id="stage-review" data-stage="2">
+              <header class="stage-head">
+                <span class="stage-num">2</span>
+                <div>
+                  <h3>Review</h3>
+                  <p class="stage-one-liner">How many should we collect?</p>
+                </div>
+              </header>
+              <p class="lock-note" id="review-lock-note">
+                Locked until discovery finishes.
+              </p>
+              <div class="stage-body" id="review-body" hidden>
+                <p id="review-found" class="review-found"></p>
+                <p id="review-warning" class="review-warning" hidden></p>
+                <label class="field" for="enrich-how-many">
+                  <span class="field-label">Enrich how many?</span>
+                  <input
+                    id="enrich-how-many"
+                    type="number"
+                    min="1"
+                    value="1000"
+                  />
+                </label>
+                <p class="hint">
+                  The collector fetches 50 per request at a fixed rate. Cap this
+                  for a short demo.
+                </p>
+                <div class="actions wrap">
+                  <button type="button" id="btn-load-bridge" class="btn primary">
+                    Load IDs to enrich
+                  </button>
+                </div>
+                <div id="review-error" class="error-box dismissible" hidden>
+                  <button type="button" class="dismiss" aria-label="Dismiss">×</button>
+                  <pre class="error-text"></pre>
+                </div>
+                <p id="bridge-meta" class="hint" hidden></p>
+                <pre id="bridge-sample" class="response" hidden></pre>
+              </div>
+            </article>
+
+            <!-- STAGE 3 -->
+            <article class="stage locked" id="stage-enrich2" data-stage="3">
+              <header class="stage-head">
+                <span class="stage-num">3</span>
+                <div>
+                  <h3>Enrich</h3>
+                  <p class="stage-one-liner">Fetch the data.</p>
+                </div>
+              </header>
+              <p class="lock-note" id="enrich2-lock-note">
+                Locked until IDs are loaded from the bridge.
+              </p>
+              <div class="stage-body" id="enrich2-body" hidden>
+                <p id="enrich2-ready" class="hint"></p>
+                <div class="actions wrap">
+                  <button type="button" id="btn-enrich2" class="btn primary">
+                    Enrich these IDs
+                  </button>
+                </div>
+                <div id="enrich2-error" class="error-box dismissible" hidden>
+                  <button type="button" class="dismiss" aria-label="Dismiss">×</button>
+                  <pre class="error-text"></pre>
+                </div>
+                <div id="enrich2-progress" class="progress-panel" hidden>
+                  <div class="progress-meta">
+                    <span id="enrich2-request-id" class="mono"></span>
+                    <span id="enrich2-elapsed" class="muted"></span>
+                  </div>
+                  <div
+                    class="progress-track"
+                    role="progressbar"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow="0"
+                    id="enrich2-bar-wrap"
+                  >
+                    <div id="enrich2-bar" class="progress-fill"></div>
+                  </div>
+                  <p id="enrich2-progress-label" class="progress-label">
+                    0 / 0 pages
+                  </p>
+                  <div class="status-pills" id="enrich2-status-pills">
+                    <span class="pill idle" data-status="pending"
+                      >pending 0</span
+                    >
+                    <span class="pill idle" data-status="in_progress"
+                      >in_progress 0</span
+                    >
+                    <span class="pill idle" data-status="done">done 0</span>
+                    <span class="pill idle" data-status="dead">dead 0</span>
+                  </div>
+                  <p id="enrich2-summary" class="summary" hidden></p>
+                  <p id="enrich2-bridge" class="summary bridge-line" hidden></p>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="card results" id="results-panel" hidden aria-labelledby="results-heading">
+          <div class="card-head">
+            <p class="mode-tag">Proof</p>
+            <h2 id="results-heading">Results</h2>
+          </div>
+          <p id="results-request" class="mono muted"></p>
+          <div class="result-tiles">
+            <div class="tile">
+              <span class="tile-value" id="tile-pages">—</span>
+              <span class="tile-label">Pages completed</span>
+            </div>
+            <div class="tile">
+              <span class="tile-value" id="tile-gcs">—</span>
+              <span class="tile-label">Raw objects in GCS</span>
+            </div>
+            <div class="tile">
+              <span class="tile-value" id="tile-bq">—</span>
+              <span class="tile-sub" id="tile-bq-sub"></span>
+              <span class="tile-label">Rows in BigQuery</span>
+            </div>
+            <div class="tile">
+              <span class="tile-value" id="tile-unloaded">—</span>
+              <span class="tile-label">Unloaded (reconcile)</span>
+            </div>
+          </div>
+          <p class="bq-explainer" id="bq-explainer">
+            More rows than incidents. Sentinel's export returns one row per
+            conversation entry, so one incident becomes several rows. The current
+            view collapses them to one per incident and thread.
+          </p>
+          <h3 class="table-heading">Last jobs for this request</h3>
+          <div class="table-wrap">
+            <table class="jobs-table" id="results-jobs">
+              <thead>
+                <tr>
+                  <th>Page</th>
+                  <th>Status</th>
+                  <th>Owner</th>
+                  <th>Records</th>
+                  <th>Raw written</th>
+                  <th>Loaded</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <details class="card admin" id="admin-section">
+          <summary class="admin-summary">
+            <span class="mode-tag">Operational</span>
+            <span class="admin-title">Admin</span>
+            <span class="muted">Reset + workers — closed by default</span>
+          </summary>
+
+          <!--
+            The preserved block is the only thing here that cannot be recovered
+            by re-running a collection.
+          -->
+          <div class="admin-body">
+            <h3>Reset collector data</h3>
+            <p class="hint">
+              Clears collector output only (Cloud SQL allowlist, GCS raw/, BQ
+              landing). Never touches sample data or live workers.
+            </p>
+            <div class="actions wrap">
+              <button type="button" id="btn-reset-dry" class="btn ghost">
+                Preview reset (dry run)
+              </button>
+            </div>
+            <pre id="reset-dry-out" class="response" hidden></pre>
+            <div id="reset-confirm-block" hidden>
+              <label class="field" for="reset-confirm">
+                <span class="field-label"
+                  >Type <code>reset-collector-data</code> to confirm</span
+                >
+                <input
+                  id="reset-confirm"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <div class="actions wrap">
+                <button type="button" id="btn-reset-real" class="btn danger" disabled>
+                  Reset for real
+                </button>
+              </div>
+            </div>
+            <div id="reset-error" class="error-box dismissible" hidden>
+              <button type="button" class="dismiss" aria-label="Dismiss">×</button>
+              <pre class="error-text"></pre>
+            </div>
+            <div id="reset-preserved" class="preserved-block" hidden>
+              <h4>Preserved (cannot be recovered by re-collecting)</h4>
+              <p id="preserved-lines"></p>
+            </div>
+            <pre id="reset-real-out" class="response" hidden></pre>
+
+            <h3>Workers</h3>
+            <!--
+              Zero live workers is the single most common reason a request sits
+              at pending forever, and the UI should say so rather than let
+              someone wonder.
+            -->
+            <div id="workers-banner" class="workers-banner" hidden>
+              No workers running. Cloud Run jobs must be executed — run
+              <code>make workers-start</code>.
+            </div>
+            <p id="workers-summary" class="hint">Live workers: —</p>
+            <div class="table-wrap">
+              <table class="jobs-table" id="workers-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Heartbeat age (s)</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </details>
+      </main>
+
+      <footer class="status-bar" aria-live="polite">
+        <div class="status-item">
+          <span class="status-label">Workers</span>
+          <span id="stat-workers" class="status-value">—</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">In-flight</span>
+          <span id="stat-inflight" class="status-value">—</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Unloaded</span>
+          <span id="stat-unloaded" class="status-value">—</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">Dead</span>
+          <span id="stat-dead" class="status-value">—</span>
+        </div>
+        <div class="status-item status-meta">
+          <span id="stat-updated" class="status-label">Status: waiting…</span>
+        </div>
+      </footer>
+    </div>
+
+    <!--
+      Do NOT put identity tokens in browser JavaScript.
+      Do NOT make the collector-api publicly invokable to work around auth.
+      The gcloud run services proxy exists for exactly this case: browser →
+      localhost:8080 → authenticated Cloud Run.
+    -->
+    <script src="app.js"></script>
+  </body>
+</html>
