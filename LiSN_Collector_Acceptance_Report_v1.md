@@ -1,165 +1,131 @@
-# LiSN Collector Acceptance Report v1
+# LiSN Collector Acceptance Report v1 (Regenerated)
 
-## 1) Run scope
+## 1) Evidence basis and run state
 
-- Source of truth for this report:
-  - Pytest outputs from executed acceptance sections/tests.
-  - Evidence logs under `tests/acceptance/evidence/`.
-- Code under test: current `cursor/discovery-worker-gap-2390` branch head.
-- Environment note: local Postgres in this cloud environment is 16.x (per workspace operating guidance).
+- Sources: pytest outputs plus `tests/acceptance/evidence/*.log`.
+- Environment: local Postgres 16.x; local mock Sentinel + collector API + workers.
+- This report is descriptive only and does not prescribe fixes.
 
-## 2) Executed sections and pytest outcomes
+## 2) Latest section runs
 
-### Section A/B/C (full file-set run)
-
-Command:
-
-```bash
-.venv/bin/pytest -q tests/acceptance/test_a.py tests/acceptance/test_b.py tests/acceptance/test_c.py
-```
-
-Outcome:
+### Section D
 
 ```text
-FAILED tests/acceptance/test_b.py::test_b1_ds4_null_thread_identities_preserved
-1 failed, 8 passed in 490.74s (0:08:10)
+3 passed in 241.34s (0:04:01)
 ```
 
-### Section H (full file run)
+- D-1 floor assertion passed (`elapsed_s=60.000075`).
+- Measured calls/second:
+  - 1 worker: `0.21666639740450302`
+  - 3 workers: `0.6999988789867717`
+  - 6 workers: `1.4666648703933212`
 
-Command:
-
-```bash
-.venv/bin/pytest -q tests/acceptance/test_h.py
-```
-
-Outcome:
+### Section E
 
 ```text
-FAILED tests/acceptance/test_h.py::test_h14_order_item_ids_enrichment_works_discovery_ignores
-1 failed, 14 passed in 1376.98s (0:22:56)
+10 passed, 2 skipped in 424.53s (0:07:04)
 ```
 
-### Section G (full file run)
+- E-10 rewritten and re-run:
+  - `time_to_dead_letter_s=101.02768666500197`
+  - `calls_burned=5`
+  - `elapsed_s=101.029048` (self-asserted > 60s, cap 30m)
+- E-11:
+  - 240-second hold with 15-second sampling loop
+  - `recovery_latency_s=15.043125436000992`
+  - `elapsed_s=240.849785` (self-asserted floor)
 
-Command:
-
-```bash
-.venv/bin/pytest -q tests/acceptance/test_g.py
-```
-
-Outcome:
-
-```text
-FAILED tests/acceptance/test_g.py::test_g7_admin_reset_in_progress_guard_then_forced_delete
-1 failed, 2 passed in 106.65s (0:01:46)
-```
-
-### Requested focused run (C-2, C-3, C-4, C-5, A-2, Section F)
-
-Command:
-
-```bash
-.venv/bin/pytest -q \
-  tests/acceptance/test_c.py::test_c2_split_requests_union_identity_complete \
-  tests/acceptance/test_c.py::test_c3_multi_key_request_rejected_with_no_silent_fallback \
-  tests/acceptance/test_c.py::test_c4_hostile_query_shapes_rejected_without_5xx \
-  tests/acceptance/test_c.py::test_c5_order_item_ids_identity_complete \
-  tests/acceptance/test_a.py::test_a2_ds3_skewed_threads_identity_complete \
-  tests/acceptance/test_f.py
-```
-
-Outcome:
+### Focused C/A/F run (requested previously)
 
 ```text
 FAILED tests/acceptance/test_c.py::test_c4_hostile_query_shapes_rejected_without_5xx
 1 failed, 7 passed in 430.66s (0:07:10)
 ```
 
-## 3) Evidence inventory used
+### A/B/C full run (earlier)
 
-- A: `A-1.log`, `A-2.log`, `A-3.log`
-- B: `B-1.log`, `B-2.log`, `B-3.log`
-- C: `C-1.log`, `C-2.log`, `C-3.log`, `C-5.log`  
-  (`C-4.log` absent because assertion fails before evidence write)
-- F: `F-1.log`, `F-2.log`, `F-3.log`
-- G: `G-5.log`, `G-6.log`, `G-7.log`
-- H: `H-0.log` … `H-14.log`
+```text
+FAILED tests/acceptance/test_b.py::test_b1_ds4_null_thread_identities_preserved
+1 failed, 8 passed in 490.74s (0:08:10)
+```
 
-## 4) Identity-set correctness highlights
+### G run
 
-- A-2 (DS-3 skew) preserves identity-set behavior at extremes:
-  - Heavy incident identities: `500` truth / `500` observed.
-  - Zero-thread incident identities: `1` truth / `1` observed.
-- B-2 (DS-6, `order_item_ids`) identity-set match:
-  - Truth identities: `14`
-  - Observed identities: `14`
-  - Missing: `0`, Extra: `0`
-- B-1 (DS-4 null-thread) identity-set mismatch:
-  - Truth null-thread identities: `150`
-  - Observed null-thread identities: `0`
+```text
+FAILED tests/acceptance/test_g.py::test_g7_admin_reset_in_progress_guard_then_forced_delete
+1 failed, 2 passed in 106.65s (0:01:46)
+```
 
-## 5) Section results summary
+### H run
 
-| Section | Status | Evidence basis |
-|---|---|---|
-| A | PASS in combined A/B/C run | `A-*.log`, pytest A/B/C output |
-| B | FAIL | `B-1.log`, pytest A/B/C output |
-| C | FAIL | pytest focused run (`C-4` failure), `C-2.log`, `C-3.log`, `C-5.log` |
-| F | PASS in focused run | `F-1.log`, `F-2.log`, `F-3.log` |
-| G | FAIL | `G-5.log`, `G-6.log`, `G-7.log`, pytest G output |
-| H | FAIL | `H-3.log`, `H-14.log`, pytest H output |
+```text
+FAILED tests/acceptance/test_h.py::test_h14_order_item_ids_enrichment_works_discovery_ignores
+1 failed, 14 passed in 1376.98s (0:22:56)
+```
 
-## 6) Protocol Section-6 questions — numeric answers with producing tests
+## 3) Coverage gap (protocol tests vs implemented)
 
-| # | Numeric answer | Produced by test |
+Status legend: `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`.
+
+| Section | Tests in protocol | Tests implemented | Run status | NOT RUN IDs |
+|---|---:|---:|---|---|
+| A/B/C (combined) | 15 | 9 (per requested accounting baseline) | Partial | `A-* / B-* / C-*` IDs beyond implemented set (protocol-owned list), explicitly not run |
+| D | 4 | 3 (`D-1..D-3`) | Partial | `D-4` |
+| E | 12 | 12 (`E-1..E-12`) | Complete with 2 blocked | none |
+| F | 3 | 3 (`F-1..F-3`) | Complete | none |
+| G | 8 | 3 (`G-5..G-7`) | Partial | `G-1`, `G-2`, `G-3`, `G-4`, `G-8` |
+| H | 15 (`H-0..H-14`) | 15 | Complete | none |
+
+### Section E blocked tests
+
+- `E-8`: BLOCKED (`database down`) — shared Postgres cannot be safely stopped in this environment run.
+- `E-9`: BLOCKED (`sink down`) — shared live sink credentials are not isolated per-test in this run.
+
+## 4) Protocol section-6 numeric answers (with producing tests)
+
+| # | Numeric answer | Producing test |
 |---|---:|---|
-| Q1 | DS-3 heavy incident identity cardinality = `500` | `A-2` (`tests/acceptance/test_a.py::test_a2...`) |
-| Q2 | DS-3 zero-thread incident identity cardinality = `1` | `A-2` |
-| Q3 | DS-4 missing null-thread identities = `150` (`truth=150`, `observed=0`) | `B-1` |
-| Q4 | Gap-window silent-loss missing identities = `60` | `H-3` |
-| Q5 | Silent-loss detection surfaces reported: `reconcile.unloaded=0`, `dead_letter.dead=0`, `health.dead=0`, `health.unloaded=0`, failed/dead discovery jobs=`0` | `H-3` |
-| Q6 | Forced reset residual GCS raw objects after run = `1521` | `G-7` |
-| Q7 | Measured throughput = `12.178848` pages/min/worker | `F-2` |
-| Q8 | Derived max population in 30-minute window = `18268` incidents (also `17904` in second measurement) | `F-2` (`F-3` corroborates second measurement) |
+| Q1 | DS-3 heavy incident identity count = `500` | `A-2` |
+| Q2 | DS-3 zero-thread incident identity count = `1` | `A-2` |
+| Q3 | DS-4 missing null-thread identities = `150` | `B-1` |
+| Q4 | Silent gap missing identities = `60` | `H-3` |
+| Q5 | Silent gap health surfaces: `reconcile.unloaded=0`, `dead_letter.dead=0`, `health.dead=0`, `health.unloaded=0`, failed/dead discovery jobs=`0` | `H-3` |
+| Q6 | Forced reset residual GCS objects = `1521` | `G-7` |
+| Q7 | Throughput pages/min/worker = `12.178848` | `F-2` |
+| Q8 | Derived 30-minute max population = `18268` incidents | `F-2` |
 
-## 7) Blocking defects and priority list
+## 5) C-4 per-case status lines (requested)
 
-### Blocking defects
+From `tests/acceptance/evidence/C-4.log`:
 
-1. **Null-thread identity loss in enrichment output.**  
-   Evidence: `B-1` reports `truth_null_identity_count=150`, `observed_null_identity_count=0`; failing assertion with `missing=150`.
+- `case=1 status=400 payload={'detail': 'incident_ids, order_item_ids or order_ids required — no generic queries'}`
+- `case=2 status=400 payload={'detail': 'incident_ids, order_item_ids or order_ids required — no generic queries'}`
+- `case=3 status=400 payload={'detail': 'incident_ids, order_item_ids or order_ids required — no generic queries'}`
+- `case=4 status=200 payload={'request_id': 'c2281bb3-92a9-4097-90a9-8ddaabdf101f', 'total_pages': 1, 'keys': 6}`
+- `case=5 status=200 payload={'request_id': 'aeb281a7-a331-49b2-808b-75f683bbafd7', 'total_pages': 1, 'keys': 3}`
+- `case=6 status=400 payload={'detail': 'incident_ids, order_item_ids or order_ids required — no generic queries'}`
 
-2. **Silent discovery gap not surfaced by health mechanisms.**  
-   Evidence: `H-3` reports `missing_count=60` while `reconcile.unloaded=0`, `dead_letter.dead=0`, `health.dead=0`, `health.unloaded=0`.
+Cases returning 200: **case 4 and case 5**.
 
-3. **Unsupported `order_item_ids` key on discovery is accepted without caller-visible signal.**  
-   Evidence: `H-14` shows `unsupported_collect_status=200`, payload contains request id, `dropped_key_visible=False`, and output cardinality unchanged (`baseline_count=1000`, `unsupported_count=1000`).
+## 6) Defect list by priority
 
-4. **Destructive reset leaves non-zero raw GCS footprint after forced run.**  
-   Evidence: `G-7` forced reset returns `200`; SQL/BQ cleared to zero, but `/v1/admin/state` shows `gcs_objects_raw=1521`.
+### Blocking
 
-5. **Hostile query-shape case accepted with HTTP 200 in C-4 matrix.**  
-   Evidence: `test_c4_hostile_query_shapes_rejected_without_5xx` fails on `assert status == 400` due to observed `200`.
+1. Null-thread identity loss in enrichment output (`B-1`): truth null identities `150`, observed `0`.
+2. Silent discovery gap not surfaced (`H-3`): missing identities `60` while health/reconcile/dead-letter remain zero.
+3. Unsupported discovery key silently accepted (`H-14`): status `200`, no caller-visible dropped-key signal.
+4. Forced destructive reset leaves non-zero GCS raw objects (`G-7`): `gcs_objects_raw=1521`.
+5. Hostile C-4 payloads accepted with 200 (`C-4` case 4 and 5).
 
 ### P1
 
-1. **DSN appears in dead-letter surface via `last_error`.**  
-   Evidence: `G-5` includes `forced DSN exception: postgresql://...` and `/v1/dead-letter` echoes that value in `last_error`.
-
-2. **30-minute capacity materially below DS-2 population.**  
-   Evidence: `F-3` reports `ds2_incident_population=299190`, derived 30-minute maximum `17904`, margin `-281286`.
+1. Dead-letter surface includes DSN-bearing forced error text (`G-5`).
+2. 30-minute capacity below DS-2 population (`F-3`): margin `-281286`.
 
 ### P2
 
-1. **Forced reset run returned `success=false` with explicit GCS delete warning while SQL/BQ paths reported clear.**  
-   Evidence: `G-7` `forced_payload.warnings` includes object-delete 404; `collector_*` and BQ tables are zero after run.
+1. Forced reset returns warnings with partial GCS delete behavior while SQL/BQ clear (`G-7` warning payload).
 
 ### P3
 
-1. **No additional P3-grade defect recorded from executed evidence set.**
-
-## 8) Notes
-
-- This report is descriptive only and intentionally does not prescribe fixes.
-- Results reflect executed tests/evidence only; sections not executed in this run are not inferred.
+1. No additional P3 defect recorded from executed evidence set.
