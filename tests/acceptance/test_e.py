@@ -491,6 +491,7 @@ def test_e6_garbage_payloads() -> None:
     assert elapsed_s > 10.0, f"E-6 elapsed too short: {elapsed_s:.3f}s"
     for row in per_mode:
         assert row["rest_completed"], f"E-6 mode={row['mode']} did not complete unaffected page(s)"
+        assert row["loud_failure"], f"E-6 mode={row['mode']} failure not loud"
 
 
 def test_e7_source_returning_unrequested_records() -> None:

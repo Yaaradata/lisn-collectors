@@ -23,15 +23,18 @@
 ### Section E
 
 ```text
-11 passed, 1 skipped in 1127.21s (0:18:47)
+Correction rerun (E-6 only): FAILED
+FAILED tests/acceptance/test_e.py::test_e6_garbage_payloads
+1 failed in 823.25s (0:13:43)
 ```
 
 - E-6 rewritten with four garbage-payload modes driven through terminal pipeline states:
-  - `truncated_json`: `raw_landed=true`, `loud_failure=false`, `attempts_before_dead_letter=null`, `rest_completed=true`
+  - `truncated_json`: `raw_landed=true`, `loud_failure=false`, `attempts_before_dead_letter=null`, `rest_completed=true`, `page0_final_status=pending`
   - `html_error_page` (`500 text/html`): `raw_landed=false`, `loud_failure=true`, `attempts_before_dead_letter=5`, `rest_completed=true`
   - `empty_body_200`: `raw_landed=true`, `loud_failure=true`, `attempts_before_dead_letter=5`, `rest_completed=true`
-  - `incidents_string`: `raw_landed=true`, `loud_failure=true`, `attempts_before_dead_letter=5`, `rest_completed=true`
-  - `E-6 elapsed_s=631.325484` (self-asserted `>10s`)
+  - `incidents_string`: `raw_landed=true`, `loud_failure=false`, `attempts_before_dead_letter=null`, `rest_completed=true`
+  - `E-6 elapsed_s=822.795789` (self-asserted `>10s`)
+  - Loudness assertion restored and now failing: `AssertionError: E-6 mode=truncated_json failure not loud`
 - E-9 executed with sink outage via temporary bad bucket override:
   - outage mode: `RAW_BUCKET=bucket-does-not-exist-e9-outage` during outage window
   - 60-second hold applied mid-run
@@ -58,6 +61,7 @@
   - `E-10` 96.30s
   - `E-11` 241.16s
   - `E-12` 6.40s
+- E-1 duration changed from a prior `54.86s` to `8.43s` after restoring a healthy dedicated `sentinel-worker` session with trimmed `PROJECT/RAW_BUCKET` env values. The prior longer timing included worker/session state drift and is not directly comparable as a recovery-latency benchmark.
 
 ### Focused C/A/F run (requested previously)
 
@@ -93,7 +97,9 @@ Status legend: `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`.
 
 | Section | Tests in protocol | Tests implemented | Run status | NOT RUN IDs |
 |---|---:|---:|---|---|
-| A/B/C (combined) | 15 | 9 (per requested accounting baseline) | Partial | `A-* / B-* / C-*` IDs beyond implemented set (protocol-owned list), explicitly not run |
+| A | 5 | 3 (`A-1..A-3`) | Partial | `A-4`, `A-5` |
+| B | 5 | 3 (`B-1..B-3`) | Partial | `B-4`, `B-5` |
+| C | 5 | 5 (`C-1..C-5`) | Complete | none |
 | D | 4 | 3 (`D-1..D-3`) | Partial | `D-4` |
 | E | 12 | 12 (`E-1..E-12`) | Partial (11 run, 1 NOT RUN) | `E-8` |
 | F | 3 | 3 (`F-1..F-3`) | Complete | none |
@@ -104,18 +110,18 @@ Status legend: `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`.
 
 - `E-8` (`database down`) — **NOT RUN**: missing precondition was isolated ability to take database down without impacting shared active environment.
 
-## 4) Protocol section-6 numeric answers (with producing tests)
+## 4) Protocol section-6 questions and answers (ordered; with producing test ID)
 
-| # | Numeric answer | Producing test |
-|---|---:|---|
-| Q1 | DS-3 heavy incident identity count = `500` | `A-2` |
-| Q2 | DS-3 zero-thread incident identity count = `1` | `A-2` |
-| Q3 | DS-4 missing null-thread identities = `150` | `B-1` |
-| Q4 | Silent gap missing identities = `60` | `H-3` |
-| Q5 | Silent gap health surfaces: `reconcile.unloaded=0`, `dead_letter.dead=0`, `health.dead=0`, `health.unloaded=0`, failed/dead discovery jobs=`0` | `H-3` |
-| Q6 | Forced reset residual GCS objects = `1521` | `G-7` |
-| Q7 | Throughput pages/min/worker = `12.178848` | `F-2` |
-| Q8 | Derived 30-minute max population = `18268` incidents | `F-2` |
+> Note: the v2 protocol document (`LiSN_Collector_Production_Acceptance_v2_bf50.md`) is not present in this workspace snapshot, so the exact question sentences are not reproducible verbatim from repository files. Ordered answers below map to the eight section-6 slots used in this run history.
+
+1. **Q1** — DS-3 heavy-incident identity cardinality: **500**. Test: `A-2`.
+2. **Q2** — DS-3 zero-thread incident identity cardinality: **1**. Test: `A-2`.
+3. **Q3** — DS-4 null-thread identity loss: **150 missing null-thread identities**. Test: `B-1`.
+4. **Q4** — H-3 missing identity count across five-window union: **60 missing identities**. Test: `H-3`.
+5. **Q5** — H-3 health-surface visibility for that gap: **none** (`reconcile.unloaded=0`, `dead_letter.dead=0`, `health.dead=0`, `health.unloaded=0`, failed/dead discovery jobs=`0`). Test: `H-3`.
+6. **Q6** — G-7 residual raw objects after forced reset: **1521**. Test: `G-7`.
+7. **Q7** — Measured throughput pages/minute/worker: **12.178848**. Test: `F-2`.
+8. **Q8** — Derived max population for 30-minute window: **18268 incidents**. Test: `F-2`.
 
 ## 5) C-4 per-case status lines (requested)
 
@@ -137,18 +143,19 @@ Cases returning 200: **case 4 and case 5**.
 
 ### Blocking
 
-1. Null-thread identity loss in enrichment output (`B-1`): truth null identities `150`, observed `0`.
-2. Silent discovery gap not surfaced (`H-3`): missing identities `60` while health/reconcile/dead-letter remain zero.
-3. Unsupported discovery key silently accepted (`H-14`): status `200`, no caller-visible dropped-key signal.
-4. Forced destructive reset leaves non-zero GCS raw objects (`G-7`): `gcs_objects_raw=1521`.
-5. Planner type-confusion in `incident_ids` handling (`C-4`):
+1. Garbage truncated JSON accepted without loud terminal surfacing (`E-6`): `truncated_json` page-0 final status is `pending` (not `dead`), loudness assertion fails, while sibling page completed.
+2. Dead-letter surface exposes credential-bearing DSN text (`G-5`): forced DSN appears in `/v1/dead-letter` while endpoint is unauthenticated.
+3. Null-thread identity loss in enrichment output (`B-1`): truth null identities `150`, observed `0`.
+4. Silent discovery gap not surfaced (`H-3`): missing identities `60` while health/reconcile/dead-letter remain zero.
+5. Unsupported discovery key silently accepted (`H-14`): status `200`, no caller-visible dropped-key signal.
+6. Forced destructive reset leaves non-zero GCS raw objects (`G-7`): `gcs_objects_raw=1521`.
+7. Planner type-confusion in `incident_ids` handling (`C-4`):
    - case 4 accepted string scalar and iterated it as six IDs (`keys=6`);
    - case 5 accepted `None`, `1`, and `{}` as planned IDs.
 
 ### P1
 
-1. Dead-letter surface includes DSN-bearing forced error text (`G-5`).
-2. 30-minute capacity below DS-2 population (`F-3`): margin `-281286`.
+1. 30-minute capacity below DS-2 population (`F-3`): margin `-281286`.
 
 ### P2
 
