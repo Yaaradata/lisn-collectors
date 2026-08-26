@@ -156,7 +156,6 @@ Cases returning 200: **case 4 and case 5**.
 ### P1
 
 1. 30-minute capacity below DS-2 population (`F-3`): margin `-281286`.
-2. Deployed workers do not survive database unavailability (production incident on 25 Aug): Cloud SQL stop/restart left `col-maintenance` exited after pool initialization timeout (`30.0s`, `exit(1)`), and Cloud Run Jobs did not auto-restart failed tasks. Any stop/restart/failover/maintenance event can leave workers permanently down until human intervention. This risk is not covered by local suite because `E-8` (database down) is **NOT RUN** in this environment.
 
 ### P2
 
@@ -165,3 +164,27 @@ Cases returning 200: **case 4 and case 5**.
 ### P3
 
 1. No additional P3 defect recorded from executed evidence set.
+
+## 7) Deployment findings (GCP, clariversev1)
+
+**Source note:** The findings in this section are **observed from production logs** (Cloud Run / Cloud SQL activity) and are **not test-produced** by the local acceptance suite.
+
+1. **Workers terminate at the 24-hour Cloud Run task ceiling with no restart. (P1)**
+   - **Evidence:** Executions `col-sentinel-j4wkc` and `col-sentinel-discovery-z82fd` both logged:
+     - `Terminating task because it has reached the maximum timeout of 86400 seconds`
+     - `Stop requested`
+     - `Stopped worker on queues ...`
+   - **Evidence:** Both executions showed clean operation over the preceding 24 hours (including 2-minute sweep logs).
+   - **Evidence:** `scripts/27_deploy_workers.sh` does not include logic to restart a completed or failed execution.
+   - **Operational consequence:** With a 30-minute hot-tier cycle, collection can stop daily; visible signal is a `Failed` row in Cloud Run console.
+
+2. **Deployed workers do not survive database unavailability. (P1)**
+   - **Evidence:** `col-maintenance` execution `col-maintenance-qmd84` started at `2026-08-25T16:03:55Z`, exited at `16:04:38Z`, failed with `exit code: 1`.
+   - **Evidence sequence:** Cloud SQL proxy emitted `Error 409: The instance or operation is not in an appropriate state to handle the request.` with `invalidState`, followed by repeated `psycopg.pool: error connecting in 'pool-1'`, then `pool initialization incomplete after 30.0 sec`, then `Container called exit(1)`.
+   - **Evidence:** Instance `lisn-collector-db` was stopped during incident window and started at `16:06:05Z` via `SqlInstancesPatchRequest body={'settings': {'activationPolicy': 'ALWAYS'}}`.
+   - **Evidence:** Cloud Run Jobs did not restart failed task; worker remained down until human action.
+   - **Coverage note:** This is the exact scenario targeted by `E-8` (database down), which is **NOT RUN** in the local suite.
+
+3. **Periodic sweep is deferred by every worker, not only maintenance worker. (P2)**
+   - **Evidence:** `col-sentinel` and `col-sentinel-discovery` logs both include `INFO:procrastinate.periodic:Periodic job sweep[...]` with interleaved sequence IDs (e.g., `1633`, `1634` on sentinel; `1636`, `1637` on discovery).
+   - **Evidence basis:** `@app.periodic` registration occurs at import time on the shared app object, so each worker process defers sweep independent of consumed queue.
