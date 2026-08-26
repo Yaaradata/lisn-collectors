@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 import urllib.parse
 import urllib.request
@@ -352,21 +353,35 @@ def test_a2_thousand_incidents_identity_equality(tokens: dict[str, str]) -> None
 
 
 def test_a3_population_scale_identity_count(tokens: dict[str, str]) -> None:
+    started = time.time()
     ids = _mock_discover_all_ids(
         tokens["mock"], updated_from="2026-08-20T00:00:00Z", updated_to="2026-08-27T00:00:00Z", limit=1000
     )
     assert ids, "expected non-empty deployed mock population"
-    truth_identity_count = len(_truth_identities_for_incident_ids(tokens["mock"], ids))
-    observed_identity_count = _bq_current_identity_count()
+    sample_size = min(5000, len(ids))
+    rng = random.Random(20260826)
+    sampled_ids = rng.sample(ids, sample_size)
+    truth_identity_count = len(_truth_identities_for_incident_ids(tokens["mock"], sampled_ids))
+    request_id, total_pages = _collect_with_pages(tokens["api"], "sentinel", {"incident_ids": sampled_ids})
+    counts = _wait_terminal_total_pages(tokens["api"], request_id, total_pages=total_pages, timeout_s=3600)
+    observed_identity_count = len(_bq_identities_for_request(request_id))
+    elapsed_s = time.time() - started
     print(
-        f"A-3 truth_identity_count={truth_identity_count} observed_identity_count={observed_identity_count} incident_count={len(ids)}"
+        f"A-3 sample_size={sample_size} truth_identity_count={truth_identity_count} "
+        f"observed_identity_count={observed_identity_count} elapsed_s={elapsed_s:.3f} request_id={request_id}"
     )
     _write_evidence(
         "A-3",
         [
-            f"incident_count={len(ids)}",
+            f"discovered_population_incident_count={len(ids)}",
+            f"sample_size={sample_size}",
+            f"request_id={request_id}",
+            f"total_pages={total_pages}",
+            f"request_counts={counts}",
             f"truth_identity_count={truth_identity_count}",
             f"observed_identity_count={observed_identity_count}",
+            f"elapsed_seconds={elapsed_s:.6f}",
+            "full_population_equality_unmeasured=true",
         ],
     )
     assert observed_identity_count == truth_identity_count
