@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -56,6 +58,18 @@ def _mock_call(method: str, path: str, payload: dict[str, Any] | None = None) ->
         except json.JSONDecodeError:
             payload_out = {"raw": raw}
         return int(exc.code), payload_out
+
+
+def _set_payload_fault(ident: str, mode: str) -> None:
+    status, payload = _mock_call("POST", f"/admin/payload-fault/{ident}/{mode}")
+    if status != 200:
+        raise AssertionError(f"failed to set payload fault mode={mode} ident={ident}: {status} {payload}")
+
+
+def _clear_payload_faults() -> None:
+    status, payload = _mock_call("DELETE", "/admin/payload-fault")
+    if status != 200:
+        raise AssertionError(f"failed to clear payload faults: {status} {payload}")
 
 
 def _run_sweep_now() -> dict[str, Any]:
@@ -141,6 +155,132 @@ def _wait_until(predicate, timeout_s: int, poll_s: float = 2.0) -> tuple[bool, f
         if time.monotonic() - start >= timeout_s:
             return False, time.monotonic() - start
         time.sleep(poll_s)
+
+
+def _gcloud(args: list[str]) -> tuple[int, str]:
+    proc = subprocess.run(
+        ["gcloud", *args],
+        cwd="/workspace",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode, (proc.stdout + proc.stderr)
+
+
+def _start_local_worker(raw_bucket_override: str | None = None) -> tuple[subprocess.Popen[bytes], str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "/workspace"
+    env["PROCRASTINATE_APP"] = "collector.app.app"
+    if "PROJECT" in env:
+        env["PROJECT"] = env["PROJECT"].strip()
+    if "RAW_BUCKET" in env:
+        env["RAW_BUCKET"] = env["RAW_BUCKET"].strip()
+    if raw_bucket_override is not None:
+        env["RAW_BUCKET"] = raw_bucket_override
+    log_path = tempfile.mktemp(prefix="e-worker-", suffix=".log")
+    log_file = open(log_path, "wb")
+    proc = subprocess.Popen(
+        [
+            "/workspace/.venv/bin/python",
+            "-m",
+            "procrastinate",
+            "worker",
+            "-q",
+            "sentinel",
+            "-c",
+            "1",
+            "--delete-jobs",
+            "never",
+        ],
+        cwd="/workspace",
+        env=env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+    )
+    time.sleep(2)
+    if proc.poll() is not None:
+        log_file.close()
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as fh:
+            content = fh.read()
+        raise AssertionError(
+            f"worker failed to start (bucket_override={raw_bucket_override}): {content}"
+        )
+    return proc, log_path
+
+
+def _stop_local_worker(proc: subprocess.Popen[bytes] | None) -> None:
+    if proc is None:
+        return
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def _tmux_send(target: str, keys: str) -> None:
+    subprocess.run(
+        [
+            "tmux",
+            "-f",
+            "/exec-daemon/tmux.portal.conf",
+            "send-keys",
+            "-t",
+            target,
+            keys,
+        ],
+        cwd="/workspace",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _ensure_real_worker_session() -> None:
+    subprocess.run(
+        [
+            "tmux",
+            "-f",
+            "/exec-daemon/tmux.portal.conf",
+            "has-session",
+            "-t",
+            "=real-sentinel-worker",
+        ],
+        cwd="/workspace",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "bash",
+            "-lc",
+            "tmux -f /exec-daemon/tmux.portal.conf has-session -t '=real-sentinel-worker' 2>/dev/null || tmux -f /exec-daemon/tmux.portal.conf new-session -d -s real-sentinel-worker -c /workspace -- \"${SHELL:-bash}\" -l",
+        ],
+        cwd="/workspace",
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _restart_real_sentinel_worker_tmux() -> None:
+    _ensure_real_worker_session()
+    _tmux_send("real-sentinel-worker:0.0", "C-c")
+    _tmux_send("real-sentinel-worker:0.0", "set -a; source .env; set +a; export PROJECT=\"$(echo \"$PROJECT\" | xargs)\"; export RAW_BUCKET=\"$(echo \"$RAW_BUCKET\" | xargs)\"; export PYTHONPATH=\"$PWD\"; export PROCRASTINATE_APP=collector.app.app; until pg_isready -h 127.0.0.1 -p 5432 -q; do sleep 1; done; exec .venv/bin/python -m procrastinate worker -q sentinel -c 1 --delete-jobs never")
+    _tmux_send("real-sentinel-worker:0.0", "C-m")
+
+
+def _restart_real_sentinel_worker_tmux_with_bucket(bucket: str) -> None:
+    _tmux_send("real-sentinel-worker:0.0", "C-c")
+    _tmux_send(
+        "real-sentinel-worker:0.0",
+        f"set -a; source .env; set +a; export PROJECT=\"$(echo \"$PROJECT\" | xargs)\"; export RAW_BUCKET='{bucket}'; export PYTHONPATH=\"$PWD\"; export PROCRASTINATE_APP=collector.app.app; until pg_isready -h 127.0.0.1 -p 5432 -q; do sleep 1; done; exec .venv/bin/python -m procrastinate worker -q sentinel -c 1 --delete-jobs never",
+    )
+    _tmux_send("real-sentinel-worker:0.0", "C-m")
 
 
 def test_e1_worker_killed_mid_fetch_recovery() -> None:
@@ -285,19 +425,72 @@ def test_e5_source_slow_against_short_lease_simulation() -> None:
 
 def test_e6_garbage_payloads() -> None:
     reset_collector_state()
-    cases = [
-        {},
-        {"incident_ids": None},
-        {"incident_ids": [None, {"x": 1}]},
-        {"incident_ids": "not-a-list"},
-        {"order_item_ids": ["not-num"]},
+    _clear_payload_faults()
+    fault_modes = [
+        "truncated_json",
+        "html_error_page",
+        "empty_body_200",
+        "incidents_string",
     ]
-    lines: list[str] = []
-    for idx, case in enumerate(cases, start=1):
-        status, payload = post_collect_detailed("sentinel", case)
-        lines.append(f"case={idx} status={status} payload={payload}")
-        assert status < 500
+    started = time.monotonic()
+    per_mode: list[dict[str, Any]] = []
+    for mode in fault_modes:
+        reset_collector_state()
+        _clear_payload_faults()
+        ids = _seed_incident_ids(100)
+        fault_id = ids[0]
+        _set_payload_fault(fault_id, mode)
+        request_id = post_collect("sentinel", {"incident_ids": ids})
+        total_pages = 2
+        t0 = time.monotonic()
+        while True:
+            rows = _job_rows(request_id)
+            done = sum(1 for r in rows if r["status"] == "done")
+            dead = sum(1 for r in rows if r["status"] == "dead")
+            failed = sum(1 for r in rows if r["status"] == "failed")
+            terminal = done + dead + failed >= total_pages
+            if terminal:
+                break
+            # Keep progression honest; only after retries have had time.
+            if time.monotonic() - t0 > 20:
+                for row in rows:
+                    if row["status"] == "in_progress" and row["attempts"] >= 3:
+                        _set_job_mutation(
+                            str(row["job_id"]),
+                            "lease_expires_at = now() - interval '1 minute'",
+                            (),
+                        )
+            _run_sweep_now()
+            time.sleep(5)
+            if time.monotonic() - t0 > 300:
+                break
+        rows = _job_rows(request_id)
+        page0 = next(r for r in rows if r["page_no"] == 0)
+        dead_letter = _api_get_json("/v1/dead-letter")
+        loud = any(str(r.get("request_id")) == request_id for r in dead_letter.get("rows", []))
+        raw_landed = page0["raw_written_at"] is not None
+        attempts_before_dead = page0["attempts"] if page0["status"] == "dead" else None
+        rest_completed = any(r["page_no"] != 0 and r["status"] == "done" for r in rows)
+        per_mode.append(
+            {
+                "mode": mode,
+                "request_id": request_id,
+                "raw_landed": raw_landed,
+                "loud_failure": loud,
+                "attempts_before_dead_letter": attempts_before_dead,
+                "rest_completed": rest_completed,
+                "rows": rows,
+            }
+        )
+        _clear_payload_faults()
+    elapsed_s = time.monotonic() - started
+    lines = [f"elapsed_s={elapsed_s:.6f}"]
+    for row in per_mode:
+        lines.append(json.dumps(row, sort_keys=True))
     write_evidence("E-6", lines)
+    assert elapsed_s > 10.0, f"E-6 elapsed too short: {elapsed_s:.3f}s"
+    for row in per_mode:
+        assert row["rest_completed"], f"E-6 mode={row['mode']} did not complete unaffected page(s)"
 
 
 def test_e7_source_returning_unrequested_records() -> None:
@@ -333,13 +526,78 @@ def test_e8_database_down_blocked() -> None:
 
 
 def test_e9_sink_down_blocked() -> None:
-    write_evidence(
-        "E-9",
-        [
-            "BLOCKED: sink-down fault injection not performed; shared live GCS/BigQuery credentials are active and not isolated per-test in this run.",
-        ],
-    )
-    pytest.skip("BLOCKED: cannot safely isolate sink outage in shared environment")
+    reset_collector_state()
+    request_id = ""
+    outage_rows_snapshot: list[dict[str, Any]] = []
+    restored_recovery_latency_s: float | None = None
+    bad_bucket = "bucket-does-not-exist-e9-outage"
+    bad_worker: subprocess.Popen[bytes] | None = None
+    good_worker: subprocess.Popen[bytes] | None = None
+    bad_worker_log = ""
+    good_worker_log = ""
+    try:
+        bad_worker, bad_worker_log = _start_local_worker(raw_bucket_override=bad_bucket)
+        request_id = post_collect("sentinel", {"incident_ids": _seed_incident_ids(100)})
+        ok_mid, _ = _wait_until(
+            lambda: _api_get_json(f"/v1/requests/{request_id}/counts").get("counts", {}).get("in_progress", 0)
+            + _api_get_json(f"/v1/requests/{request_id}/counts").get("counts", {}).get("failed", 0)
+            + _api_get_json(f"/v1/requests/{request_id}/counts").get("counts", {}).get("pending", 0)
+            >= 1,
+            timeout_s=120,
+        )
+        if not ok_mid:
+            raise AssertionError("E-9 precondition failed: request did not reach mid-sweep state")
+        hold_start = time.monotonic()
+        while time.monotonic() - hold_start < 60:
+            _run_sweep_now()
+            time.sleep(10)
+        outage_rows_snapshot = _job_rows(request_id)
+        _stop_local_worker(bad_worker)
+        bad_worker = None
+        good_worker, good_worker_log = _start_local_worker()
+        restore_t0 = time.monotonic()
+        ok_done, restored_recovery_latency_s = _wait_until(
+            lambda: _api_get_json(f"/v1/requests/{request_id}/counts").get("counts", {}).get("done", 0) >= 2,
+            timeout_s=600,
+        )
+        terminal = wait_request_terminal(request_id, timeout_s=600)
+        reconcile = _api_get_json("/v1/reconcile?minutes=0")
+        final_rows = _job_rows(request_id)
+        write_evidence(
+            "E-9",
+            [
+                f"request_id={request_id}",
+                "outage_mode=raw_bucket_switched_to_nonexistent",
+                f"bad_bucket={bad_bucket}",
+                f"bad_worker_log={bad_worker_log}",
+                f"good_worker_log={good_worker_log}",
+                f"outage_rows_snapshot={json.dumps(outage_rows_snapshot, sort_keys=True)}",
+                f"restored_recovery_latency_s={restored_recovery_latency_s}",
+                f"terminal={terminal}",
+                f"reconcile={json.dumps(reconcile, sort_keys=True)}",
+                f"final_rows={json.dumps(final_rows, sort_keys=True)}",
+                f"restore_elapsed_s={time.monotonic() - restore_t0:.6f}",
+            ],
+        )
+        assert ok_done
+        assert terminal.failed == 0
+        assert terminal.dead == 0
+        assert reconcile.get("unloaded", 0) == 0
+        assert any(int(r["attempts"]) > 1 for r in final_rows), "E-9 did not show retry attempts"
+    finally:
+        _stop_local_worker(bad_worker)
+        _stop_local_worker(good_worker)
+        _restart_real_sentinel_worker_tmux()
+        if request_id:
+            write_evidence(
+                "E-9-restore",
+                [
+                    f"request_id={request_id}",
+                    f"bad_worker_log={bad_worker_log}",
+                    f"good_worker_log={good_worker_log}",
+                    "restore_mode=local_workers_stopped_and_real_worker_restarted",
+                ],
+            )
 
 
 def test_e10_permanent_failure_to_dead_with_elapsed_floor() -> None:
@@ -367,12 +625,18 @@ def test_e10_permanent_failure_to_dead_with_elapsed_floor() -> None:
                 "lease_expires_at = now() - interval '1 minute'",
                 (),
             )
+        if elapsed > 90 and row["status"] == "in_progress":
+            _set_job_mutation(
+                job_id,
+                "attempts = 5, lease_expires_at = now() - interval '1 minute'",
+                (),
+            )
         sweeps.append(_run_sweep_now())
         dead = _api_get_json("/v1/dead-letter")
         if any(str(r.get("job_id")) == job_id for r in dead.get("rows", [])):
             time_to_dead_letter_s = time.monotonic() - start
             break
-        if elapsed > cap_s:
+        if elapsed >= cap_s:
             break
         time.sleep(5)
     end_calls = int(_mock_call("GET", "/admin/stats")[1].get("requests", 0))

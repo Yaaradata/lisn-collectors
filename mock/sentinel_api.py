@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
@@ -25,6 +26,7 @@ from mock.reference import MAX_IDS_PER_CALL
 # In-memory fault set for Sprint 4 retry demos. In-memory on purpose so a
 # process restart clears injected faults.
 _FAULTS: set[str] = set()
+_PAYLOAD_FAULTS: dict[str, str] = {}
 
 # Request counter for Sprint 5 rate measurement (scripts/30_measure_rate.sh).
 # In-memory on purpose — one mock instance; a rolling deploy briefly doubles it.
@@ -172,6 +174,14 @@ class DiscoverRequest(BaseModel):
     issue_names: list[str] = Field(default_factory=list)
     cursor: str | None = None
     limit: int = DISCOVER_LIMIT_DEFAULT
+
+
+_VALID_PAYLOAD_FAULT_MODES = {
+    "truncated_json",
+    "html_error_page",
+    "empty_body_200",
+    "incidents_string",
+}
 
 
 def _as_order_item_id(value: Any) -> float:
@@ -332,6 +342,34 @@ def search_incidents(body: SearchRequest, request: Request) -> dict[str, Any]:
     requested = set(incident_ids) | {str(x) for x in order_item_ids} | set(order_ids)
     if requested & _FAULTS:
         raise HTTPException(status_code=500, detail="injected fault")
+    mode: str | None = None
+    for ident in requested:
+        if ident in _PAYLOAD_FAULTS:
+            mode = _PAYLOAD_FAULTS[ident]
+            break
+    if mode == "truncated_json":
+        return Response(
+            content='{"incidents":[',
+            media_type="application/json",
+            status_code=200,
+        )
+    if mode == "html_error_page":
+        return Response(
+            content="<html><body><h1>500 upstream</h1></body></html>",
+            media_type="text/html",
+            status_code=500,
+        )
+    if mode == "empty_body_200":
+        return Response(
+            content="",
+            media_type="application/json",
+            status_code=200,
+        )
+    if mode == "incidents_string":
+        return {
+            "incidents": "not-a-list",
+            "count": 11,
+        }
 
     pool: ConnectionPool = request.app.state.pool
     with pool.connection() as conn:
@@ -448,6 +486,28 @@ def clear_faults() -> dict[str, Any]:
 @app.get("/admin/fault")
 def list_faults() -> dict[str, Any]:
     return {"faults": sorted(_FAULTS)}
+
+
+@app.post("/admin/payload-fault/{ident}/{mode}")
+def add_payload_fault(ident: str, mode: str) -> dict[str, Any]:
+    if mode not in _VALID_PAYLOAD_FAULT_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"mode must be one of {sorted(_VALID_PAYLOAD_FAULT_MODES)}",
+        )
+    _PAYLOAD_FAULTS[ident] = mode
+    return {"payload_faults": dict(sorted(_PAYLOAD_FAULTS.items()))}
+
+
+@app.delete("/admin/payload-fault")
+def clear_payload_faults() -> dict[str, Any]:
+    _PAYLOAD_FAULTS.clear()
+    return {"payload_faults": {}}
+
+
+@app.get("/admin/payload-fault")
+def list_payload_faults() -> dict[str, Any]:
+    return {"payload_faults": dict(sorted(_PAYLOAD_FAULTS.items()))}
 
 
 @app.get("/admin/stats")

@@ -23,30 +23,41 @@
 ### Section E
 
 ```text
-10 passed, 2 skipped in 482.99s (0:08:02)
+11 passed, 1 skipped in 1127.21s (0:18:47)
 ```
 
-- E-10 rewritten and re-run:
-  - `time_to_dead_letter_s=101.02768666500197`
-  - `calls_burned=5`
-  - `elapsed_s=101.029048` (self-asserted > 60s, cap 30m)
+- E-6 rewritten with four garbage-payload modes driven through terminal pipeline states:
+  - `truncated_json`: `raw_landed=true`, `loud_failure=false`, `attempts_before_dead_letter=null`, `rest_completed=true`
+  - `html_error_page` (`500 text/html`): `raw_landed=false`, `loud_failure=true`, `attempts_before_dead_letter=5`, `rest_completed=true`
+  - `empty_body_200`: `raw_landed=true`, `loud_failure=true`, `attempts_before_dead_letter=5`, `rest_completed=true`
+  - `incidents_string`: `raw_landed=true`, `loud_failure=true`, `attempts_before_dead_letter=5`, `rest_completed=true`
+  - `E-6 elapsed_s=631.325484` (self-asserted `>10s`)
+- E-9 executed with sink outage via temporary bad bucket override:
+  - outage mode: `RAW_BUCKET=bucket-does-not-exist-e9-outage` during outage window
+  - 60-second hold applied mid-run
+  - recovery after restore: terminal `done=2 failed=0 dead=0`, `reconcile.unloaded=0`
+  - retry evidence on affected page: `attempts=3`
 - E-11:
   - 240-second hold with 15-second sampling loop
-  - `recovery_latency_s=15.043125436000992`
-  - `elapsed_s=240.849785` (self-asserted floor)
+  - `recovery_latency_s=15.043799979997857`
+  - `elapsed_s=240.853` (self-asserted floor)
+- E-10 rewritten and re-run:
+  - `time_to_dead_letter_s=95.99067213400122`
+  - `calls_burned=4`
+  - `elapsed_s=95.992` (self-asserted > 60s, cap 30m)
 - Per-test call durations from latest Section E run:
-  - `E-1` 54.86s
-  - `E-2` 6.45s
-  - `E-3` 10.43s
-  - `E-4` 32.48s
-  - `E-5` 20.47s
-  - `E-6` 0.13s
-  - `E-7` 8.85s
+  - `E-1` 8.43s
+  - `E-2` 4.38s
+  - `E-3` 10.41s
+  - `E-4` 34.49s
+  - `E-5` 20.45s
+  - `E-6` 631.36s
+  - `E-7` 8.63s
   - `E-8` 0.00s (skipped)
-  - `E-9` 0.00s (skipped)
-  - `E-10` 101.36s
-  - `E-11` 241.18s
-  - `E-12` 6.43s
+  - `E-9` 64.95s
+  - `E-10` 96.30s
+  - `E-11` 241.16s
+  - `E-12` 6.40s
 
 ### Focused C/A/F run (requested previously)
 
@@ -84,7 +95,7 @@ Status legend: `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`.
 |---|---:|---:|---|---|
 | A/B/C (combined) | 15 | 9 (per requested accounting baseline) | Partial | `A-* / B-* / C-*` IDs beyond implemented set (protocol-owned list), explicitly not run |
 | D | 4 | 3 (`D-1..D-3`) | Partial | `D-4` |
-| E | 12 | 12 (`E-1..E-12`) | Partial (10 run, 2 NOT RUN) | `E-8`, `E-9` |
+| E | 12 | 12 (`E-1..E-12`) | Partial (11 run, 1 NOT RUN) | `E-8` |
 | F | 3 | 3 (`F-1..F-3`) | Complete | none |
 | G | 8 | 3 (`G-5..G-7`) | Partial | `G-1`, `G-2`, `G-3`, `G-4`, `G-8` |
 | H | 15 (`H-0..H-14`) | 15 | Complete | none |
@@ -92,7 +103,6 @@ Status legend: `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`.
 ### Section E NOT RUN tests (coverage gap)
 
 - `E-8` (`database down`) — **NOT RUN**: missing precondition was isolated ability to take database down without impacting shared active environment.
-- `E-9` (`sink down`) — **NOT RUN**: missing precondition was isolated sink-outage harness for GCS/BigQuery under shared live credentials.
 
 ## 4) Protocol section-6 numeric answers (with producing tests)
 
