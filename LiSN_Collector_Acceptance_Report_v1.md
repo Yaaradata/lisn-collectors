@@ -156,6 +156,7 @@ Cases returning 200: **case 4 and case 5**.
 ### P1
 
 1. 30-minute capacity below DS-2 population (`F-3`): margin `-281286`.
+2. Deployed workers do not survive database unavailability (production incident on 25 Aug): Cloud SQL stop/restart left `col-maintenance` exited after pool initialization timeout (`30.0s`, `exit(1)`), and Cloud Run Jobs did not auto-restart failed tasks. Any stop/restart/failover/maintenance event can leave workers permanently down until human intervention. This risk is not covered by local suite because `E-8` (database down) is **NOT RUN** in this environment.
 
 ### P2
 
