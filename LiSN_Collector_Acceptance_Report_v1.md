@@ -23,7 +23,7 @@
 ### Section E
 
 ```text
-10 passed, 2 skipped in 424.53s (0:07:04)
+10 passed, 2 skipped in 482.99s (0:08:02)
 ```
 
 - E-10 rewritten and re-run:
@@ -34,6 +34,19 @@
   - 240-second hold with 15-second sampling loop
   - `recovery_latency_s=15.043125436000992`
   - `elapsed_s=240.849785` (self-asserted floor)
+- Per-test call durations from latest Section E run:
+  - `E-1` 54.86s
+  - `E-2` 6.45s
+  - `E-3` 10.43s
+  - `E-4` 32.48s
+  - `E-5` 20.47s
+  - `E-6` 0.13s
+  - `E-7` 8.85s
+  - `E-8` 0.00s (skipped)
+  - `E-9` 0.00s (skipped)
+  - `E-10` 101.36s
+  - `E-11` 241.18s
+  - `E-12` 6.43s
 
 ### Focused C/A/F run (requested previously)
 
@@ -71,15 +84,15 @@ Status legend: `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`.
 |---|---:|---:|---|---|
 | A/B/C (combined) | 15 | 9 (per requested accounting baseline) | Partial | `A-* / B-* / C-*` IDs beyond implemented set (protocol-owned list), explicitly not run |
 | D | 4 | 3 (`D-1..D-3`) | Partial | `D-4` |
-| E | 12 | 12 (`E-1..E-12`) | Complete with 2 blocked | none |
+| E | 12 | 12 (`E-1..E-12`) | Partial (10 run, 2 NOT RUN) | `E-8`, `E-9` |
 | F | 3 | 3 (`F-1..F-3`) | Complete | none |
 | G | 8 | 3 (`G-5..G-7`) | Partial | `G-1`, `G-2`, `G-3`, `G-4`, `G-8` |
 | H | 15 (`H-0..H-14`) | 15 | Complete | none |
 
-### Section E blocked tests
+### Section E NOT RUN tests (coverage gap)
 
-- `E-8`: BLOCKED (`database down`) — shared Postgres cannot be safely stopped in this environment run.
-- `E-9`: BLOCKED (`sink down`) — shared live sink credentials are not isolated per-test in this run.
+- `E-8` (`database down`) — **NOT RUN**: missing precondition was isolated ability to take database down without impacting shared active environment.
+- `E-9` (`sink down`) — **NOT RUN**: missing precondition was isolated sink-outage harness for GCS/BigQuery under shared live credentials.
 
 ## 4) Protocol section-6 numeric answers (with producing tests)
 
@@ -107,6 +120,9 @@ From `tests/acceptance/evidence/C-4.log`:
 
 Cases returning 200: **case 4 and case 5**.
 
+- Case 4 type-confusion detail: input `{"incident_ids": "IN2608"}` returned `200` with `keys: 6`, meaning the planner iterated the string character-by-character and planned six incident IDs.
+- Case 5 type-confusion detail: input `{"incident_ids": [None, 1, {}]}` returned `200` and planned those non-string values directly as IDs.
+
 ## 6) Defect list by priority
 
 ### Blocking
@@ -115,7 +131,9 @@ Cases returning 200: **case 4 and case 5**.
 2. Silent discovery gap not surfaced (`H-3`): missing identities `60` while health/reconcile/dead-letter remain zero.
 3. Unsupported discovery key silently accepted (`H-14`): status `200`, no caller-visible dropped-key signal.
 4. Forced destructive reset leaves non-zero GCS raw objects (`G-7`): `gcs_objects_raw=1521`.
-5. Hostile C-4 payloads accepted with 200 (`C-4` case 4 and 5).
+5. Planner type-confusion in `incident_ids` handling (`C-4`):
+   - case 4 accepted string scalar and iterated it as six IDs (`keys=6`);
+   - case 5 accepted `None`, `1`, and `{}` as planned IDs.
 
 ### P1
 
