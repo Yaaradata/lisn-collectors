@@ -109,12 +109,15 @@ def test_c4_hostile_query_shapes_rejected_without_5xx() -> None:
         {"limit": 10},
     ]
     lines: list[str] = []
+    statuses: list[int] = []
     for idx, query_spec in enumerate(cases, start=1):
         status, payload = post_collect_detailed("sentinel", query_spec)
         lines.append(f"case={idx} status={status} payload={payload}")
+        statuses.append(status)
+    write_evidence("C-4", lines)
+    for status in statuses:
         assert status < 500
         assert status == 400
-    write_evidence("C-4", lines)
 
 
 def test_c5_order_item_ids_identity_complete() -> None:
