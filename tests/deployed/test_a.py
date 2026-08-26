@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import random
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -123,6 +124,20 @@ def _mock_discover_all_ids(
         if max_pages is not None and pages >= max_pages:
             break
     return out
+
+
+def _mock_admin_null_thread_ids(mock_token: str, limit: int = 200) -> list[str] | None:
+    """Return null-thread incident ids from mock admin endpoint when available."""
+    url = MOCK_URL + "/admin/null-thread-ids?" + urllib.parse.urlencode({"limit": limit})
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {mock_token}"}, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+            return [str(x) for x in payload.get("incident_ids", [])]
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403, 404):
+            return None
+        raise
 
 
 def _idents_from_mock_incidents(incidents: list[dict[str, Any]]) -> set[tuple[str, str | None]]:
@@ -461,29 +476,42 @@ def test_a5_discovery_to_enrichment_balance(tokens: dict[str, str]) -> None:
 
 
 def test_a6_null_thread_incident_survives(tokens: dict[str, str]) -> None:
-    ids = _mock_discover_all_ids(
-        tokens["mock"], updated_from="2026-08-20T00:00:00Z", updated_to="2026-08-27T00:00:00Z", limit=1000, max_pages=10
-    )
-    null_thread_id: str | None = None
-    for i in range(0, len(ids), 50):
-        payload = _mock_search(tokens["mock"], incident_ids=ids[i : i + 50])
-        for row in payload.get("incidents", []):
-            if row.get("threads.id") is None:
-                null_thread_id = str(row["id"])
-                break
-        if null_thread_id:
-            break
-    assert null_thread_id is not None, "could not find incident with no threads in sampled deployed mock set"
+    # Preferred: read null-thread population directly from deployed mock DB via
+    # read-only /admin endpoint when available.
+    admin_ids = _mock_admin_null_thread_ids(tokens["mock"], limit=200)
+    source_mode = "admin-endpoint" if admin_ids is not None else "discover-search-diff"
+    null_thread_id: str | None = admin_ids[0] if admin_ids else None
+
+    if null_thread_id is None:
+        # Fallback when endpoint is unavailable: IDs present in discover but
+        # absent from search output over the same ID set are candidates for
+        # zero-thread incidents under a thread-exploded export.
+        ids = _mock_discover_all_ids(
+            tokens["mock"],
+            updated_from="2026-08-20T00:00:00Z",
+            updated_to="2026-08-27T00:00:00Z",
+            limit=1000,
+            max_pages=5,
+        )
+        seen_ids: set[str] = set()
+        for i in range(0, len(ids), 50):
+            payload = _mock_search(tokens["mock"], incident_ids=ids[i : i + 50])
+            seen_ids |= {str(row["id"]) for row in payload.get("incidents", [])}
+        missing = sorted(set(ids) - seen_ids)
+        null_thread_id = missing[0] if missing else None
+    assert null_thread_id is not None, "no null-thread candidate found from admin endpoint or discover-search diff"
     truth = {(null_thread_id, None)}
-    request_id = _collect(tokens["api"], "sentinel", {"incident_ids": [null_thread_id]})
-    counts = _wait_terminal(tokens["api"], request_id, timeout_s=300)
+    request_id, total_pages = _collect_with_pages(tokens["api"], "sentinel", {"incident_ids": [null_thread_id]})
+    counts = _wait_terminal_total_pages(tokens["api"], request_id, total_pages=total_pages, timeout_s=300)
     observed = _bq_identities_for_request(request_id)
     print(f"A-6 truth_identity_count={len(truth)} observed_identity_count={len(observed)} request_id={request_id}")
     _write_evidence(
         "A-6",
         [
+            f"source_mode={source_mode}",
             f"incident_id={null_thread_id}",
             f"request_id={request_id}",
+            f"total_pages={total_pages}",
             f"truth_identity_count={len(truth)}",
             f"observed_identity_count={len(observed)}",
             f"request_counts={counts}",
@@ -504,7 +532,7 @@ def test_a7_order_item_ids_retrieval(tokens: dict[str, str]) -> None:
         for inc in payload.get("incidents", []):
             val = inc.get("orderItemId")
             if val is not None:
-                order_item_id = int(val)
+                order_item_id = int(float(val))
                 break
         if order_item_id is not None:
             break
