@@ -6,9 +6,8 @@
 - Source boundary: source under test is the deployed mock on Cloud Run (`mock-sentinel`), not real Flipkart Sentinel. Real Sentinel is an internal application Yaaralabs cannot directly reach.
 - Throughput/rate caveat: every throughput/rate figure in this report is against a source that answers instantly; real-source performance will be worse.
 - This report uses only executed evidence from:
-  - Phase 0 artifacts under `/opt/cursor/artifacts/`
-  - `tests/deployed/evidence/*.log` for sections `A`, `C`, `D`, `E`, `F`
-  - Section `B` measurement artifacts under `/opt/cursor/artifacts/section-b-*.json`
+  - `tests/deployed/evidence/*.log` for sections `A`, `C`, `D`, `E`, `F` and `Q3-gap`
+  - `docs/deployed/artifacts/*.json` for committed deployed measurement artifacts (including section `B` one-off measurements)
 - Postgres version observed in this run context: `PostgreSQL 16.15` (from test evidence).
 - No remediation/fix prescriptions are included; this report is descriptive only.
 
@@ -27,7 +26,7 @@
 1. **Does it lose data? Records in versus out, at 1,000 and at population.**  
    **Answer:**  
    - 1,000-set: no loss (`truth_identity_count=2477`, `observed_identity_count=2477`).  
-   - Population sample (A-3 cap): no loss on measured sample (`truth_identity_count=12575`, `observed_identity_count=12575`, sample size `5000`, full-population equality unmeasured).  
+   - At a 5,000-incident sample of a 299,190 population: no loss on measured sample (`truth_identity_count=12575`, `observed_identity_count=12575`, full-population equality unmeasured).  
    **Test/ID:** `A-2`, `A-3`.
 
 2. **Does it lose data between stages? Discovered minus enriched minus pending.**  
@@ -53,16 +52,17 @@
    **Test/ID:** `F-3`.
 
 6. **Does it stay inside a rate limit, and is anything enforcing one?**  
-   **Answer:** measured call rates scale with task count (`C-1`: 1/2/3 tasks; `C-2`: no global ceiling observed in tested range). Runtime uses per-source intervals (`sentinel` 1.0s, `sentinel_discovery` 2.0s), but no external hard cap surface was evidenced in deployed run.  
+   **Answer:** measured call rates scale with task count (`C-1`: 1/2/3 tasks; `C-2`: no global ceiling observed in tested range). No test attempted to exceed a ceiling, so the supported finding is linear scaling in the tested range and no observed enforcement mechanism in that range (not proof that none exists). Runtime uses per-source intervals (`sentinel` 1.0s, `sentinel_discovery` 2.0s).  
    **Test/ID:** `C-1`, `C-2`, `C-4`.
 
 7. **Does it recover without a human? Per scenario: recovered / recovered with delay / needed intervention / lost data.**  
    **Answer:**  
-   - recovered: `D-1`, `D-2`, `D-3`, `D-6`, `D-11`  
-   - recovered with delay: `D-7`, `D-12`  
-   - needed intervention: `D-8`, `D-9`  
-   - lost data: none in executed D-scope  
-   **Test/ID:** `D-1`, `D-2`, `D-3`, `D-6`, `D-7`, `D-8`, `D-9`, `D-11`, `D-12`.
+   - unattended recovery: **not tested**. In executed induced-failure runs, tests either performed manual restart actions themselves (`E-2`, `E-3`, `D-8`, `D-9`) or drove pages to terminal dead outcomes (`E-4`, `E-6`) without an unattended-recovery observation window.  
+   - recovered with delay: `E-6` mode `incidents_string` (terminal done with delayed completion)  
+   - needed intervention: `E-2` (kill/restart sentinel workers), `E-3` (kill after progress/restart), `E-4` (permanent source fault dead-letter), `E-6` modes `truncated_json`/`html_error_page`/`empty_body_200` (dead-letter), `D-8` (cancel/restart sentinel workers), `D-9` (cancel/restart discovery worker)  
+   - lost data: none proven in the executed induced-failure scenarios above  
+   - NOT RUN (protocol failure scenarios): source down, source slow against the lease, source returning unrequested records, killswitch pause  
+   **Test/ID:** `E-2`, `E-3`, `E-4`, `E-6`, `D-8`, `D-9`.
 
 8. **Can an operator tell when it is broken? Per surface: request finished, page stuck, silent failure, window gap, data lag.**  
    **Answer:**  
@@ -70,7 +70,8 @@
    - loud source failure is visible (`E-4` dead-letter page; not silent).  
    - `/v1/dead-letter` is IAM-protected (403 unauthenticated, succeeds with identity token).  
    - window-gap visibility was executed and is **not visible** on operator surfaces: induced gap lost `104` records while `/v1/reconcile`, `/v1/dead-letter`, and `/v1/health/detail` deltas were all zero.  
-   - formal data-lag metric was not executed as a dedicated deployed scenario in this report window.  
+   - page stuck: **NOT RUN** as a dedicated protocol-matching scenario.  
+   - data lag: **NOT RUN** as a dedicated protocol-matching scenario.  
    **Test/ID:** `E-1`, `E-4`, `E-5`, `Q3-gap.log`.
 
 ## 4) Defects (blocking / P1 / P2 / P3)
@@ -93,10 +94,10 @@
    Evidence: `F-3` margin `-105706`.
 
 2. **Single-page latency during active sweep can be very high.**  
-   Evidence: `F-2` probe latency `371.525s` while sweep is in progress; `D-7` shows `177.119s` probe latency during sweep.
+   Evidence: `test_f2_single_page_latency_during_backlog` probe latency `371.525s` while sweep is in progress; `test_d7_single_request_latency_while_sweeping` shows `177.119s` probe latency during sweep.
 
 3. **Worker interruption scenarios require intervention to recover flow.**  
-   Evidence: `D-8` and `D-9` classified `scenario_status=needed_intervention`.
+   Evidence: `D-8` and `D-9` measured cancellation plus manual restart behavior: workers were cancelled, manually restarted by the test, and collection resumed to terminal completion after restart. Whether the system would recover unaided was not measured.
 
 ### P2
 
@@ -147,6 +148,18 @@ From `docs/deployed/prior_local_findings.md`:
 
 6. **Protocol F-1, F-2, F-3, F-5 — NOT RUN (as protocol-defined scenarios)**  
    Reason: tests with those IDs were executed in `tests/deployed/test_f.py`, but their implemented behaviors do not match protocol definitions (see mapping table below).
+
+7. **Protocol failure scenario: source down — NOT RUN**  
+   Reason: no executed protocol-matching induced-failure test for this scenario in this report window.
+
+8. **Protocol failure scenario: source slow against the lease — NOT RUN**  
+   Reason: no executed protocol-matching induced-failure test for this scenario in this report window.
+
+9. **Protocol failure scenario: source returning unrequested records — NOT RUN**  
+   Reason: no executed protocol-matching induced-failure test for this scenario in this report window.
+
+10. **Protocol failure scenario: killswitch pause — NOT RUN**  
+   Reason: no executed protocol-matching induced-failure test for this scenario in this report window.
 
 ## 7) Protocol-to-implementation mapping accuracy (D/F)
 
