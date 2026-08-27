@@ -437,12 +437,14 @@ def test_a4_discovery_window_identity_equality(tokens: dict[str, str]) -> None:
 def test_a5_discovery_to_enrichment_balance(tokens: dict[str, str]) -> None:
     updated_from = "2026-08-22T18:00:00Z"
     updated_to = "2026-08-22T19:00:00Z"
-    discovery_request_id = _collect(
+    discovery_request_id, discovery_total_pages = _collect_with_pages(
         tokens["api"],
         "sentinel_discovery",
         {"updated_from": updated_from, "updated_to": updated_to},
     )
-    disc_counts = _wait_terminal(tokens["api"], discovery_request_id, timeout_s=1200)
+    disc_counts = _wait_terminal_total_pages(
+        tokens["api"], discovery_request_id, total_pages=discovery_total_pages, timeout_s=1200
+    )
     discovered = _bq_discovered_ids_for_request(discovery_request_id)
     pending_url = API_URL + "/v1/discovered/pending?" + urllib.parse.urlencode({"limit": 20000})
     pending_resp = _http_json("GET", pending_url, tokens["api"])
@@ -450,8 +452,8 @@ def test_a5_discovery_to_enrichment_balance(tokens: dict[str, str]) -> None:
     pending_of_discovered = sorted(discovered & pending_ids)
     for i in range(0, len(pending_of_discovered), 1000):
         chunk = pending_of_discovered[i : i + 1000]
-        rid = _collect(tokens["api"], "sentinel", {"incident_ids": chunk})
-        _wait_terminal(tokens["api"], rid, timeout_s=1800)
+        rid, total_pages = _collect_with_pages(tokens["api"], "sentinel", {"incident_ids": chunk})
+        _wait_terminal_total_pages(tokens["api"], rid, total_pages=total_pages, timeout_s=1800)
     enriched_ids = _bq_current_ids_for_filter(discovered)
     pending_resp_after = _http_json("GET", pending_url, tokens["api"])
     pending_after = {str(x) for x in pending_resp_after.get("ids", [])}
