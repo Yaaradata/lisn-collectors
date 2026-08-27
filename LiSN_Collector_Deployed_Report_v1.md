@@ -126,10 +126,7 @@ From `docs/deployed/prior_local_findings.md`:
 3. **D-10 — NOT RUN**  
    Reason: explicitly excluded by instruction for this run.
 
-4. **E-6 (full payload-fault execution path) — NOT RUN / BLOCKED**  
-   Reason: deployed mock does not expose `/admin/payload-fault` endpoints (`HTTP 404`), so required per-mode fault injection could not be executed on deployed.
-
-5. **F-4 — NOT RUN**  
+4. **F-4 — NOT RUN**  
    Reason: explicitly excluded by instruction for this run (`do not call admin delete endpoint`).
 
 ## 7) Measurement reconciliation notes
