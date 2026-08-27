@@ -33,8 +33,11 @@
    **Test/ID:** `A-5` (rerun with corrected waiter).
 
 3. **Can a scheduling mistake lose data invisibly? How many records, and does anything detect it.**  
-   **Answer:** not directly measured in deployed run sequence (gap-invisibility scenario from local `H-3` was not rerun on deployed in this pass).  
-   **Test/ID:** `NOT RUN on deployed` (no deployed `H-3` evidence in this report window).
+   **Answer:** yes. In a deployed 6-hour span (`2026-08-20T00:00:00Z` to `2026-08-20T06:00:00Z`), five consecutive 1-hour discovery windows were run while skipping the third; the union missed **104** incident IDs versus full-span truth (`truth=1094`, `union=990`, `missing=104`).  
+   First three missing IDs: `IN26081800000000005138`, `IN26081800000000005387`, `IN26081800000000006206`.  
+   Last three missing IDs: `IN26082000000000110345`, `IN26082000000000111112`, `IN26082000000000111286`.  
+   Operator surfaces did not change during this induced gap (`reconcile`, `dead-letter`, `health` deltas all zero).  
+   **Test/ID:** deployed gap test evidence `Q3-gap.log` (window requests: `9d1b72f1-ffaa-4c20-8812-09a848b7ca80`, `087023fc-9ac4-4941-8109-98f658bb6900`, `c23f9b5a-c6af-4f10-941a-5e8c5641e8d5`, `965b5d9f-fd8c-471d-99dd-4716ecd74813`, `5f824596-1fef-4fa4-a9de-1a7280fd4e37`).
 
 4. **Does it change data? Fields compared, fields mismatched.**  
    **Answer:** yes, for high-magnitude numeric IDs above precision boundary. Seeded values show mutation in warehouse numeric value:  
@@ -71,10 +74,7 @@
 
 ### Blocking
 
-1. **Nonexistent incident request can complete as success with zero records and no error surface.**  
-   Evidence: `E-1` logs `counts={'done': 1}`, `records=0`, explicit observation text: `nonexistent incident returns done:1, records:0 with no error`.
-
-2. **Numeric value mutation occurs above precision boundary.**  
+1. **Numeric value mutation occurs above precision boundary.**  
    Evidence from seeded numeric retest (parsed numeric comparison, not string rendering): `9007199254740993` changed to `9007199254740992.0`; `1234567890123456789` changed by `-11`; `9007199254740991` remained exact.
 
 ### P1
@@ -90,10 +90,13 @@
 
 ### P2
 
-1. **Injected source-fault scenario yields loud terminal failure requiring intervention.**  
+1. **Not-found vs failed collection is indistinguishable at request surface (observability gap).**  
+   Evidence: `E-1` logs terminal success with `counts={'done': 1}` and `records=0` for nonexistent incident `IN26082200000000000051`; caller gets no explicit not-found discriminator.
+
+2. **Injected source-fault scenario yields loud terminal failure requiring intervention.**  
    Evidence: `E-4` terminal counts include dead page (`{'dead': 1, 'done': 1}`); dead-lettered page is visible, so this is classified as needed intervention (not silent loss).
 
-2. **Payload-fault modes show mixed outcomes under deployed run.**  
+3. **Payload-fault modes show mixed outcomes under deployed run.**  
    Evidence `E-6`: `truncated_json`, `html_error_page`, `empty_body_200` each terminal `dead=1`; `incidents_string` terminal `done=1` with `records=7` after delay.
 
 ### P3
@@ -149,7 +152,13 @@ From `docs/deployed/prior_local_findings.md`:
 - The prior reported `balance=350` in A-5 was a **harness bug**, not a collector defect.  
 - Root cause: A-5 previously used `_wait_terminal` (first-page terminal) instead of `_wait_terminal_total_pages` for enrichment chunks.  
 - After waiter correction and rerun: `balance=0` (`discovered=1788`, `enriched=1788`, `pending=0`).
-## 9) Notes
+
+## 9) A-6 refuted hypothesis note
+
+- **A-6 passed on deployed** after enabling read-only null-thread visibility on mock and seeding a null-thread probe incident.  
+- `incident_id=IN270827NULLTHREAD0001` reached `incidents_current` with observed identity `(id, None)` and `truth_identity_count=1`, `observed_identity_count=1`.  
+- This **refutes** the local-run hypothesis of persistent null-thread loss (`150` lost identities) for the currently deployed path.
+## 10) Notes
 
 - This report intentionally does **not** prescribe fixes.
 - Results are bounded to executed and evidenced tests/artifacts listed above.
