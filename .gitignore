@@ -84,6 +84,12 @@ temp/
 data/
 !data/.gitkeep
 
+# Keep deployed acceptance evidence tracked
+!tests/deployed/evidence/
+!tests/deployed/evidence/*.log
+!docs/deployed/artifacts/
+!docs/deployed/artifacts/**
+
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb_checkpoints

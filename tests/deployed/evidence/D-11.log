@@ -1,0 +1,8 @@
+request_id=fe03ac1d-699f-4605-a374-35a8d31eaaa8
+total_pages=1200
+terminal_counts={'done': 1200}
+elapsed_s=547.578
+sample_ids_checked=2000
+sample_truth_identities=4940
+sample_observed_identities=4940
+scenario_status=recovered

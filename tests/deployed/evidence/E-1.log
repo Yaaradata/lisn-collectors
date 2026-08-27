@@ -1,0 +1,8 @@
+request_id=fea98dca-c90f-495f-8430-19abed06b17c
+nonexistent_incident_id=IN26082200000000000051
+total_pages=1
+counts={'done': 1}
+records=0
+elapsed_s=3.512
+observation=nonexistent incident returns done:1, records:0 with no error
+scenario_status=recovered

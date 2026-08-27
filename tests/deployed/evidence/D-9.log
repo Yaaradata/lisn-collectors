@@ -1,0 +1,10 @@
+base_execution=col-sentinel-discovery-nphcp
+request_id=1ef3b38b-c66a-4567-8486-a9223b56903a
+total_pages=1
+cancelled_executions=['col-sentinel-discovery-nphcp', 'col-sentinel-discovery-czc2j', 'col-sentinel-discovery-pfsm5', 'col-sentinel-discovery-4m5hh', 'col-sentinel-discovery-9nwzw', 'col-sentinel-discovery-6hbn6', 'col-sentinel-discovery-z82fd', 'col-sentinel-discovery-fgz77', 'col-sentinel-discovery-xt9hf', 'col-sentinel-discovery-jn7mh', 'col-sentinel-discovery-6zjrw', 'col-sentinel-discovery-2msbq']
+paused_counts={'done': 1}
+restart_execution=col-sentinel-discovery-p8gxf
+terminal_counts={'done': 1}
+observed_discovered_ids=2000
+elapsed_s=79.167
+scenario_status=needed_intervention

@@ -16,7 +16,7 @@
 
 - Phase 0 (`P-1..P-4`): executed (artifacts present).
 - Section A: evidence present for `A-1`, `A-2`, `A-3`, `A-4`, `A-5`, `A-6`, `A-7`.
-- Section B: `B-1..B-6` measured via deployed measurement artifacts.
+- Section B: `B-1..B-6` measured via one-off deployed measurement scripts/artifacts (not via a committed `tests/deployed/test_b.py` suite).
 - Section C: `C-1..C-4` executed (`4 passed`).
 - Section D: executed `D-1`, `D-2`, `D-3`, `D-6`, `D-7`, `D-8`, `D-9`, `D-11`, `D-12` (`9 passed`).
 - Section E: executed `E-1..E-6`; `E-6` rerun after mock redeploy with payload-fault knobs.
@@ -142,7 +142,31 @@ From `docs/deployed/prior_local_findings.md`:
 4. **F-4 — NOT RUN**  
    Reason: explicitly excluded by instruction for this run (`do not call admin delete endpoint`).
 
-## 7) Measurement reconciliation notes
+5. **Protocol D-1, D-2, D-3, D-6, D-7, D-8, D-9, D-11, D-12 — NOT RUN (as protocol-defined scenarios)**  
+   Reason: tests with those IDs were executed in `tests/deployed/test_d.py`, but their implemented behaviors do not match protocol definitions (see mapping table below).
+
+6. **Protocol F-1, F-2, F-3, F-5 — NOT RUN (as protocol-defined scenarios)**  
+   Reason: tests with those IDs were executed in `tests/deployed/test_f.py`, but their implemented behaviors do not match protocol definitions (see mapping table below).
+
+## 7) Protocol-to-implementation mapping accuracy (D/F)
+
+| Protocol ID | Protocol scenario (v3) | Implemented test | What implemented test actually does | Corresponds to protocol? |
+|---|---|---|---|---|
+| D-1 | Cancel one sentinel task mid-fetch; measure recovery/duplication | `test_d1_single_page_recovery` | Single-page happy-path recovery check | No |
+| D-2 | Cancel all three sentinel tasks mid-sweep; auto-recovery | `test_d2_multi_page_recovery` | Multi-page happy-path completion | No |
+| D-3 | 24-hour task-ceiling stop; measure stop duration | `test_d3_bulk_recovery_with_possible_delay` | Bulk enrichment completion with delay classification | No |
+| D-6 | Source down (mock scaled to zero for 60s) | `test_d6_discovery_to_enrichment_bridge` | Discovery→enrichment bridge balance check | No |
+| D-7 | Source slow (20s/call) against lease | `test_d7_single_request_latency_while_sweeping` | Probe latency while backlog sweep is active | No |
+| D-8 | Source garbage payload modes | `test_d8_sentinel_worker_intervention_required` | Cancel sentinel workers and restart mid-run | No |
+| D-9 | Source returns unrequested records | `test_d9_discovery_worker_intervention_required` | Cancel discovery worker and restart mid-run | No |
+| D-11 | Permanent page failure; time-to-dead-letter | `test_d11_run_to_conclusion_with_30m_cap` | Large run to completion under 30-minute cap | No |
+| D-12 | Killswitch pause 240s under load; zero source calls while paused | `test_d12_hold_240s_sampling_15s` | 240s observation under load without killswitch pause/resume assertions | No |
+| F-1 | Workers restart after termination / scheduler behavior | `test_f1_throughput_floor_60s` | 60-second throughput floor measurement | No |
+| F-2 | Is periodic sweep isolated to maintenance queue | `test_f2_single_page_latency_during_backlog` | Single-page latency during backlog | No |
+| F-3 | `CLOUD_RUN_TASK_INDEX` identity stability across restarts | `test_f3_run_to_conclusion_and_30m_capacity` | Full-sweep throughput/capacity measurement | No |
+| F-5 | Ten consecutive cycles drift/health growth | `test_f5_discovery_and_enrichment_parallel_rate` | Rate independence of discovery+enrichment concurrency | No |
+
+## 8) Measurement reconciliation notes
 
 1. **Latency during sweep (B-5 vs F-2 vs D-7):**
    - `B-5 = 2740.669s` measured during a full-population sweep (`4929` pages / `246412` IDs), with probe submitted while that large sweep was already active.
@@ -157,18 +181,18 @@ From `docs/deployed/prior_local_findings.md`:
    - Difference is expected burst-vs-sustained behavior.  
    - **Primary cycle-capacity figure for planning:** `F-3` sustained value (`193484`).
 
-## 8) A-5 correction note
+## 9) A-5 correction note
 
 - The prior reported `balance=350` in A-5 was a **harness bug**, not a collector defect.  
 - Root cause: A-5 previously used `_wait_terminal` (first-page terminal) instead of `_wait_terminal_total_pages` for enrichment chunks.  
 - After waiter correction and rerun: `balance=0` (`discovered=1788`, `enriched=1788`, `pending=0`).
 
-## 9) A-6 refuted hypothesis note
+## 10) A-6 refuted hypothesis note
 
 - **A-6 passed on deployed** after enabling read-only null-thread visibility on mock and seeding a null-thread probe incident.  
 - `incident_id=IN270827NULLTHREAD0001` reached `incidents_current` with observed identity `(id, None)` and `truth_identity_count=1`, `observed_identity_count=1`.  
 - This **refutes** the local-run hypothesis of persistent null-thread loss (`150` lost identities) for the currently deployed path.
-## 10) Notes
+## 11) Notes
 
 - This report intentionally does **not** prescribe fixes.
 - Results are bounded to executed and evidenced tests/artifacts listed above.

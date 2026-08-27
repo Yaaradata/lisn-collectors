@@ -1,0 +1,15 @@
+span_updated_from=2026-08-20T00:00:00Z
+span_updated_to=2026-08-20T06:00:00Z
+ran_windows=1,2,4,5,6 (skipped 3)
+truth_count=1094
+union_count=990
+missing_count=104
+missing_first3=['IN26081800000000005138', 'IN26081800000000005387', 'IN26081800000000006206']
+missing_last3=['IN26082000000000110345', 'IN26082000000000111112', 'IN26082000000000111286']
+reconcile_before=2/2
+dead_letter_before=5/5
+health_before_dead_unloaded=5/2
+reconcile_after=2/2
+dead_letter_after=5/5
+health_after_dead_unloaded=5/2
+surfaces_delta={'reconcile_unloaded': 0, 'reconcile_rows': 0, 'dead_letter_dead': 0, 'dead_letter_rows': 0, 'health_stuck': 0, 'health_orphans': 0, 'health_unloaded': 0, 'health_dead': 0, 'health_live_workers': 0}

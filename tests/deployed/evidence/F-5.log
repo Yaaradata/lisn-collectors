@@ -1,0 +1,10 @@
+enrichment_execution=col-sentinel-rgjrt
+discovery_execution=col-sentinel-discovery-6rhz4
+combo_execution_sentinel=col-sentinel-g5nvj
+combo_execution_discovery=col-sentinel-discovery-5rsmb
+enrichment_calls_per_second=2.183330
+discovery_calls_per_second=0.166666
+combined_calls_per_second=2.383330
+sum_alone_calls_per_second=2.349996
+combined_over_sum_ratio=1.014185
+scenario_status=recovered

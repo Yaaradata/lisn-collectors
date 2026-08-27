@@ -1,0 +1,7 @@
+incident_id=IN26081800000000000004
+request_id=1077da63-8440-49a3-ad18-32333794a1d5
+total_pages=1
+truth_identity_count=4
+observed_identity_count=4
+request_counts=RequestCounts(done=1, failed=0, dead=0, records=4)
+row_key_count=39

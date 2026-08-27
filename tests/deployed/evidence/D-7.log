@@ -1,0 +1,10 @@
+sweep_request_id=e1108bd8-f753-4e4a-9791-79d8901c8446
+sweep_total_pages=400
+sweep_counts={'done': 400}
+probe_request_id=c72eabfc-f709-4cfd-af62-32f0f8d2aa94
+probe_total_pages=1
+probe_counts={'done': 1}
+probe_elapsed_s=177.119
+probe_truth_identities=117
+probe_observed_identities=117
+scenario_status=recovered_with_delay

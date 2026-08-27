@@ -1,0 +1,58 @@
+{
+  "incident_id": "IN26081800000000000004",
+  "discover_response": {
+    "incident_ids": [
+      "IN26081800000000000004"
+    ],
+    "count": 1,
+    "next_cursor": "IN26081800000000000004",
+    "has_more": true
+  },
+  "request_id": "458b7f3b-d71b-4500-aa00-2503523f614b",
+  "row_count": 4,
+  "request_to_queryable_latency_seconds": 3.6767189502716064,
+  "counts_endpoint": {
+    "request_id": "458b7f3b-d71b-4500-aa00-2503523f614b",
+    "counts": {
+      "done": 1
+    },
+    "records": 4
+  },
+  "health_detail": {
+    "counts": {
+      "sentinel": {
+        "done": 204
+      },
+      "sentinel_discovery": {
+        "done": 2
+      }
+    },
+    "stuck": 0,
+    "orphans": 0,
+    "live_workers": 5,
+    "workers": [
+      {
+        "id": 11,
+        "heartbeat_age_seconds": 5.986261
+      },
+      {
+        "id": 12,
+        "heartbeat_age_seconds": 6.024165
+      },
+      {
+        "id": 13,
+        "heartbeat_age_seconds": 6.045895
+      },
+      {
+        "id": 14,
+        "heartbeat_age_seconds": 0.75057
+      },
+      {
+        "id": 15,
+        "heartbeat_age_seconds": 4.504718
+      }
+    ],
+    "unloaded": 0,
+    "dead": 0
+  }
+}

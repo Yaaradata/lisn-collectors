@@ -1,0 +1,149 @@
+{
+  "span": {
+    "updated_from": "2026-08-20T00:00:00Z",
+    "updated_to": "2026-08-20T06:00:00Z"
+  },
+  "hourly_truth_counts": [
+    {
+      "idx": 1,
+      "start": "2026-08-20 00:00:00+00:00",
+      "end": "2026-08-20 01:00:00+00:00",
+      "count": 34
+    },
+    {
+      "idx": 2,
+      "start": "2026-08-20 01:00:00+00:00",
+      "end": "2026-08-20 02:00:00+00:00",
+      "count": 34
+    },
+    {
+      "idx": 3,
+      "start": "2026-08-20 02:00:00+00:00",
+      "end": "2026-08-20 03:00:00+00:00",
+      "count": 104
+    },
+    {
+      "idx": 4,
+      "start": "2026-08-20 03:00:00+00:00",
+      "end": "2026-08-20 04:00:00+00:00",
+      "count": 188
+    },
+    {
+      "idx": 5,
+      "start": "2026-08-20 04:00:00+00:00",
+      "end": "2026-08-20 05:00:00+00:00",
+      "count": 289
+    },
+    {
+      "idx": 6,
+      "start": "2026-08-20 05:00:00+00:00",
+      "end": "2026-08-20 06:00:00+00:00",
+      "count": 445
+    }
+  ],
+  "truth_count": 1094,
+  "ran_windows": [
+    1,
+    2,
+    4,
+    5,
+    6
+  ],
+  "window_runs": [
+    {
+      "window_index": 1,
+      "updated_from": "2026-08-20T00:00:00Z",
+      "updated_to": "2026-08-20T01:00:00Z",
+      "request_id": "9d1b72f1-ffaa-4c20-8812-09a848b7ca80",
+      "counts": {
+        "done": 1
+      },
+      "records": 34
+    },
+    {
+      "window_index": 2,
+      "updated_from": "2026-08-20T01:00:00Z",
+      "updated_to": "2026-08-20T02:00:00Z",
+      "request_id": "087023fc-9ac4-4941-8109-98f658bb6900",
+      "counts": {
+        "done": 1
+      },
+      "records": 34
+    },
+    {
+      "window_index": 4,
+      "updated_from": "2026-08-20T03:00:00Z",
+      "updated_to": "2026-08-20T04:00:00Z",
+      "request_id": "c23f9b5a-c6af-4f10-941a-5e8c5641e8d5",
+      "counts": {
+        "done": 1
+      },
+      "records": 188
+    },
+    {
+      "window_index": 5,
+      "updated_from": "2026-08-20T04:00:00Z",
+      "updated_to": "2026-08-20T05:00:00Z",
+      "request_id": "965b5d9f-fd8c-471d-99dd-4716ecd74813",
+      "counts": {
+        "done": 1
+      },
+      "records": 289
+    },
+    {
+      "window_index": 6,
+      "updated_from": "2026-08-20T05:00:00Z",
+      "updated_to": "2026-08-20T06:00:00Z",
+      "request_id": "5f824596-1fef-4fa4-a9de-1a7280fd4e37",
+      "counts": {
+        "done": 1
+      },
+      "records": 445
+    }
+  ],
+  "union_count": 990,
+  "missing_count": 104,
+  "missing_first3": [
+    "IN26081800000000005138",
+    "IN26081800000000005387",
+    "IN26081800000000006206"
+  ],
+  "missing_last3": [
+    "IN26082000000000110345",
+    "IN26082000000000111112",
+    "IN26082000000000111286"
+  ],
+  "surfaces_before": {
+    "reconcile_unloaded": 2,
+    "reconcile_rows": 2,
+    "dead_letter_dead": 5,
+    "dead_letter_rows": 5,
+    "health_stuck": 0,
+    "health_orphans": 0,
+    "health_unloaded": 2,
+    "health_dead": 5,
+    "health_live_workers": 12
+  },
+  "surfaces_after": {
+    "reconcile_unloaded": 2,
+    "reconcile_rows": 2,
+    "dead_letter_dead": 5,
+    "dead_letter_rows": 5,
+    "health_stuck": 0,
+    "health_orphans": 0,
+    "health_unloaded": 2,
+    "health_dead": 5,
+    "health_live_workers": 12
+  },
+  "surfaces_delta": {
+    "reconcile_unloaded": 0,
+    "reconcile_rows": 0,
+    "dead_letter_dead": 0,
+    "dead_letter_rows": 0,
+    "health_stuck": 0,
+    "health_orphans": 0,
+    "health_unloaded": 0,
+    "health_dead": 0,
+    "health_live_workers": 0
+  }
+}

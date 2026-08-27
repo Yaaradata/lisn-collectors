@@ -1,0 +1,8 @@
+execution=col-sentinel-pc9hr
+window_elapsed_s=60.000
+source_requests_before=6316
+source_requests_after=6447
+source_requests_delta=131
+calls_per_second=2.183330
+pages_per_minute_per_worker=43.666595
+scenario_status=recovered
