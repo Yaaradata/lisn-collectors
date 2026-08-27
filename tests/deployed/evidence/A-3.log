@@ -1,0 +1,9 @@
+discovered_population_incident_count=246412
+sample_size=5000
+request_id=4a0f2559-2665-4d87-94f6-63b1b8d7d68a
+total_pages=100
+request_counts=RequestCounts(done=100, failed=0, dead=0, records=12575)
+truth_identity_count=12575
+observed_identity_count=12575
+elapsed_seconds=271.745384
+full_population_equality_unmeasured=true

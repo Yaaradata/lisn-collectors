@@ -1,0 +1,7 @@
+request_id=1e16dd85-620b-4489-8c37-e4f8127f0661
+fault_id=IN26081800000000000004
+healthy_ids_count=50
+total_pages=2
+terminal_counts={'dead': 1, 'done': 1}
+elapsed_s=922.849
+scenario_status=lost_data

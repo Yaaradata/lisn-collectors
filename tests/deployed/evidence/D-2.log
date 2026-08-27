@@ -1,0 +1,7 @@
+request_id=94512c6f-fde5-4762-bbca-71107e9dca4c
+total_pages=10
+elapsed_s=6.638
+truth_identities=1216
+observed_identities=1216
+counts={'done': 10}
+scenario_status=recovered

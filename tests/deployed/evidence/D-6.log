@@ -1,0 +1,11 @@
+discovery_request_id=e7c47902-437c-448d-bd3a-c251976ebd9f
+discovery_total_pages=1
+discovery_counts={'done': 1}
+discovered_ids=1788
+pending_of_discovered_before_enrich=0
+enrich_request_id=none
+enrich_total_pages=0
+enrich_counts={}
+covered_in_incidents_current=1788
+elapsed_s=18.502
+scenario_status=recovered

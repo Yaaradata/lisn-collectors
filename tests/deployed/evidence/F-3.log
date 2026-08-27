@@ -1,0 +1,11 @@
+request_id=9ca8028f-52c7-497d-b32a-9b9bc394b6bd
+total_pages=4929
+terminal_counts={'done': 4929}
+elapsed_s=2292.745
+elapsed_min=38.212411
+pages_per_minute_total=128.989507
+pages_per_minute_per_worker=42.996502
+derived_population_ceiling_30m=193484
+ds2_population=299190
+margin_vs_ds2=-105706
+scenario_status=recovered_with_delay

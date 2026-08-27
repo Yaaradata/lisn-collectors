@@ -1,0 +1,5 @@
+base_execution=col-sentinel-gscbw
+overlap_execution=col-sentinel-9fd9c
+baseline_calls_per_second_3_tasks=2.166660
+rolling_redeploy_peak_calls_per_second=4.874220
+rolling_redeploy_peak_multiplier=2.249647

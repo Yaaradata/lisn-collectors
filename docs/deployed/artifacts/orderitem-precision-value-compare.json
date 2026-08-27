@@ -1,0 +1,39 @@
+{
+  "request_id": "96af1585-1eef-46a0-a9f2-74ca6739586d",
+  "total_pages": 1,
+  "terminal_counts": {
+    "done": 1
+  },
+  "rows": [
+    {
+      "incident_id": "IN270827PRECISION01",
+      "truth_numeric": "9007199254740991",
+      "mock_parsed_numeric": "9007199254740991",
+      "bq_parsed_numeric": "9007199254740991.0",
+      "mock_equals_truth": true,
+      "bq_equals_truth": true,
+      "bq_equals_mock": true,
+      "truth_minus_bq": "0.0"
+    },
+    {
+      "incident_id": "IN270827PRECISION02",
+      "truth_numeric": "9007199254740993",
+      "mock_parsed_numeric": "9007199254740993",
+      "bq_parsed_numeric": "9007199254740992.0",
+      "mock_equals_truth": true,
+      "bq_equals_truth": false,
+      "bq_equals_mock": false,
+      "truth_minus_bq": "1.0"
+    },
+    {
+      "incident_id": "IN270827PRECISION03",
+      "truth_numeric": "1234567890123456789",
+      "mock_parsed_numeric": "1234567890123456789",
+      "bq_parsed_numeric": "1.2345678901234568E+18",
+      "mock_equals_truth": true,
+      "bq_equals_truth": false,
+      "bq_equals_mock": false,
+      "truth_minus_bq": "-11"
+    }
+  ]
+}

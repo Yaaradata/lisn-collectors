@@ -1,0 +1,49 @@
+{
+  "annotation": "all figures below are against an instant source (deployed mock, no injected delay/fault)",
+  "B-1": {
+    "pages_per_minute_per_task_at_1_task": 44.0,
+    "pages_per_minute_total_at_1_task": 44.0,
+    "window_source_requests": 44,
+    "window_seconds": 60.0,
+    "execution": "col-sentinel-9h8j9",
+    "request_id": "db301286-559f-48d4-8f9b-9ddae4f38bf5",
+    "request_total_pages": 100
+  },
+  "B-2": {
+    "pages_per_minute_per_task_at_3_tasks": 48.0,
+    "pages_per_minute_total_at_3_tasks": 144.0,
+    "window_source_requests": 144,
+    "window_seconds": 60.0,
+    "execution": "col-sentinel-tn74s",
+    "request_id": "e9183330-8837-476b-8479-6fb21a46987d",
+    "request_total_pages": 300
+  },
+  "B-3": {
+    "derived_30_min_population_ceiling": 215999,
+    "formula": "pages_per_minute_per_task_at_3_tasks \u00d7 3 tasks \u00d7 30 minutes \u00d7 batch_cap(50)",
+    "batch_cap": 50
+  },
+  "B-4": {
+    "full_sweep_wall_clock_seconds": 2817.433,
+    "full_sweep_wall_clock_minutes": 46.957,
+    "full_sweep_population_ids": 246412,
+    "full_sweep_request_id": "2f70dd78-5477-47ab-b7fd-d709b11fcb27",
+    "full_sweep_total_pages": 4929,
+    "estimated_minutes_from_rate": 34.229
+  },
+  "B-5": {
+    "single_request_latency_during_sweep_seconds": 2740.669,
+    "probe_request_id": "5b86238f-c646-42ff-8546-ad77d8560f9b",
+    "probe_total_pages": 1
+  },
+  "B-6": {
+    "peak_cloudsql_connections": {
+      "points_seen": 0,
+      "peak_connections": 0.0
+    },
+    "cold_start_cost_seconds": 71.593,
+    "cold_start_execution": "col-sentinel-stqkv",
+    "cold_start_request_id": "90a68361-3c75-40e7-b311-c92f2d7e2687",
+    "cold_start_request_total_pages": 1
+  }
+}
