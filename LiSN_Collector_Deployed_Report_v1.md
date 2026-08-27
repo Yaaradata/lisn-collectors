@@ -3,6 +3,8 @@
 ## 1) Run scope
 
 - Environment: deployed GCP stack (`clariversev1`), Cloud Run Jobs + Cloud SQL + GCS + BigQuery.
+- Source boundary: source under test is the deployed mock on Cloud Run (`mock-sentinel`), not real Flipkart Sentinel. Real Sentinel is an internal application Yaaralabs cannot directly reach.
+- Throughput/rate caveat: every throughput/rate figure in this report is against a source that answers instantly; real-source performance will be worse.
 - This report uses only executed evidence from:
   - Phase 0 artifacts under `/opt/cursor/artifacts/`
   - `tests/deployed/evidence/*.log` for sections `A`, `C`, `D`, `E`, `F`
@@ -67,15 +69,23 @@
    - request-finished surface exists (`/v1/requests/{id}/counts` terminal and records).  
    - loud source failure is visible (`E-4` dead-letter page; not silent).  
    - `/v1/dead-letter` is IAM-protected (403 unauthenticated, succeeds with identity token).  
-   - window-gap visibility and formal data-lag metric were not executed as dedicated deployed scenarios in this report window.  
-   **Test/ID:** `E-1`, `E-4`, `E-5`; plus `NOT RUN on deployed` for gap-visibility/data-lag dedicated scenarios.
+   - window-gap visibility was executed and is **not visible** on operator surfaces: induced gap lost `104` records while `/v1/reconcile`, `/v1/dead-letter`, and `/v1/health/detail` deltas were all zero.  
+   - formal data-lag metric was not executed as a dedicated deployed scenario in this report window.  
+   **Test/ID:** `E-1`, `E-4`, `E-5`, `Q3-gap.log`.
 
 ## 4) Defects (blocking / P1 / P2 / P3)
 
 ### Blocking
 
 1. **Numeric value mutation occurs above precision boundary.**  
-   Evidence from seeded numeric retest (parsed numeric comparison, not string rendering): `9007199254740993` changed to `9007199254740992.0`; `1234567890123456789` changed by `-11`; `9007199254740991` remained exact.
+   Evidence from seeded numeric retest (parsed numeric comparison, not string rendering): `9007199254740993` changed to `9007199254740992.0`; `1234567890123456789` changed by `-11`; `9007199254740991` remained exact.  
+   Consequence: `order_item_id` is incident grain and a downstream LiSN join key; value mutation in transit breaks those joins without an explicit error surface.
+
+2. **Window-gap scheduling loss is silent on operator surfaces.**  
+   Evidence: five discovery windows with the third skipped produced `truth=1094`, `union=990`, `missing=104`, while `/v1/reconcile`, `/v1/dead-letter`, and `/v1/health/detail` showed zero deltas.  
+   Missing IDs (first three): `IN26081800000000005138`, `IN26081800000000005387`, `IN26081800000000006206`.  
+   Missing IDs (last three): `IN26082000000000110345`, `IN26082000000000111112`, `IN26082000000000111286`.  
+   Request IDs: `9d1b72f1-ffaa-4c20-8812-09a848b7ca80`, `087023fc-9ac4-4941-8109-98f658bb6900`, `c23f9b5a-c6af-4f10-941a-5e8c5641e8d5`, `965b5d9f-fd8c-471d-99dd-4716ecd74813`, `5f824596-1fef-4fa4-a9de-1a7280fd4e37`.
 
 ### P1
 
