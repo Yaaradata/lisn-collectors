@@ -488,6 +488,123 @@ def list_faults() -> dict[str, Any]:
     return {"faults": sorted(_FAULTS)}
 
 
+@app.get("/admin/null-thread-ids")
+def list_null_thread_ids(request: Request, limit: int = 200) -> dict[str, Any]:
+    if limit < 1 or limit > 5000:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 5000")
+    pool: ConnectionPool = request.app.state.pool
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT i.id
+                FROM sentinel_incident AS i
+                LEFT JOIN sentinel_thread AS t
+                  ON t.incident_id = i.id
+                WHERE t.thread_id IS NULL
+                ORDER BY i.id
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            ids = [str(row[0]) for row in cur.fetchall()]
+    return {"incident_ids": ids, "count": len(ids), "limit": limit}
+
+
+@app.post("/admin/seed-acceptance-probes")
+def seed_acceptance_probes(request: Request) -> dict[str, Any]:
+    """Seed precision/null-thread probe incidents for deployed acceptance checks."""
+    now = datetime.now(timezone.utc)
+    precision_rows = [
+        ("IN270827PRECISION01", 9007199254740991),
+        ("IN270827PRECISION02", 9007199254740993),
+        ("IN270827PRECISION03", 1234567890123456789),
+    ]
+    null_thread_id = "IN270827NULLTHREAD0001"
+
+    pool: ConnectionPool = request.app.state.pool
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            for idx, (incident_id, order_item_id) in enumerate(precision_rows, start=1):
+                cur.execute("DELETE FROM sentinel_thread WHERE incident_id = %s", (incident_id,))
+                cur.execute("DELETE FROM sentinel_incident WHERE id = %s", (incident_id,))
+                cur.execute(
+                    """
+                    INSERT INTO sentinel_incident (
+                      id, issue_id, issue_name, order_id, order_item_id, order_item_unit_id,
+                      order_item_product_fsn, source, status_id, status_status, status_status_type,
+                      subject, updated_on, created_at, queue, assigned_to
+                    ) VALUES (
+                      %s, 3267, 'Delay in Delivery', %s, %s, %s,
+                      %s, 'Sentinel', 1, 'Unresolved', 'UNRESOLVED',
+                      'Precision probe', %s, %s, 'IMS V2', 'system'
+                    )
+                    """,
+                    (
+                        incident_id,
+                        f"ODPREC{idx:06d}",
+                        str(order_item_id),
+                        str(order_item_id + 1000),
+                        f"FSNPREC{idx:06d}",
+                        now,
+                        now,
+                    ),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO sentinel_thread (
+                      thread_id, incident_id, channel_id, channel_name, communication_id,
+                      content_type, created_at, created_by, system_thread,
+                      thread_entry_type_id, thread_entry_type_name, updated_at, updated_by
+                    ) VALUES (
+                      %s, %s, 5, 'Outbound', %s,
+                      'text/plain', %s, 'system', true,
+                      1005, 'Proactive', %s, 'system'
+                    )
+                    """,
+                    (
+                        f"THPREC{idx:06d}",
+                        incident_id,
+                        str(order_item_id + 2000),
+                        now,
+                        now,
+                    ),
+                )
+
+            cur.execute("DELETE FROM sentinel_thread WHERE incident_id = %s", (null_thread_id,))
+            cur.execute("DELETE FROM sentinel_incident WHERE id = %s", (null_thread_id,))
+            cur.execute(
+                """
+                INSERT INTO sentinel_incident (
+                  id, issue_id, issue_name, order_id, order_item_id, order_item_unit_id,
+                  order_item_product_fsn, source, status_id, status_status, status_status_type,
+                  subject, updated_on, created_at, queue, assigned_to
+                ) VALUES (
+                  %s, 7570, 'Request for Reschedule Delivery', %s, %s, %s,
+                  %s, 'Sentinel', 1, 'Unresolved', 'UNRESOLVED',
+                  'Null-thread probe', %s, %s, 'IMS V2', 'system'
+                )
+                """,
+                (
+                    null_thread_id,
+                    "ODNULL000001",
+                    "4000000000999999",
+                    "5000000000999999",
+                    "FSNNULL000001",
+                    now,
+                    now,
+                ),
+            )
+        conn.commit()
+
+    return {
+        "precision_incident_ids": [incident_id for incident_id, _ in precision_rows],
+        "precision_values": [str(value) for _, value in precision_rows],
+        "null_thread_incident_id": null_thread_id,
+        "seeded_at": now.isoformat(),
+    }
+
+
 @app.post("/admin/payload-fault/{ident}/{mode}")
 def add_payload_fault(ident: str, mode: str) -> dict[str, Any]:
     if mode not in _VALID_PAYLOAD_FAULT_MODES:
