@@ -57,7 +57,7 @@
 
 7. **Does it recover without a human? Per scenario: recovered / recovered with delay / needed intervention / lost data.**  
    **Answer:**  
-   - recovered: none in executed induced-failure set  
+   - unattended recovery: **not tested**. In executed induced-failure runs, tests either performed manual restart actions themselves (`E-2`, `E-3`, `D-8`, `D-9`) or drove pages to terminal dead outcomes (`E-4`, `E-6`) without an unattended-recovery observation window.  
    - recovered with delay: `E-6` mode `incidents_string` (terminal done with delayed completion)  
    - needed intervention: `E-2` (kill/restart sentinel workers), `E-3` (kill after progress/restart), `E-4` (permanent source fault dead-letter), `E-6` modes `truncated_json`/`html_error_page`/`empty_body_200` (dead-letter), `D-8` (cancel/restart sentinel workers), `D-9` (cancel/restart discovery worker)  
    - lost data: none proven in the executed induced-failure scenarios above  
@@ -94,10 +94,10 @@
    Evidence: `F-3` margin `-105706`.
 
 2. **Single-page latency during active sweep can be very high.**  
-   Evidence: `F-2` probe latency `371.525s` while sweep is in progress; `D-7` shows `177.119s` probe latency during sweep.
+   Evidence: `test_f2_single_page_latency_during_backlog` probe latency `371.525s` while sweep is in progress; `test_d7_single_request_latency_while_sweeping` shows `177.119s` probe latency during sweep.
 
 3. **Worker interruption scenarios require intervention to recover flow.**  
-   Evidence: `D-8` and `D-9` classified `scenario_status=needed_intervention`.
+   Evidence: `D-8` and `D-9` measured cancellation plus manual restart behavior: workers were cancelled, manually restarted by the test, and collection resumed to terminal completion after restart. Whether the system would recover unaided was not measured.
 
 ### P2
 
