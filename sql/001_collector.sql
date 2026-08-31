@@ -42,12 +42,26 @@ CREATE TABLE IF NOT EXISTS collector_job (
   -- it was called non-negotiable in review.
   raw_written_at    timestamptz,
   loaded_at         timestamptz,
+  -- Three counts — do not conflate:
+  --   requested_count — keys we asked for (page payload length)
+  --   returned_count  — distinct source entities that came back
+  --   record_count    — rows written to BigQuery (higher under thread explosion)
+  requested_count   integer,
+  returned_count    integer,
   record_count      integer,
+  -- Sample of keys in the shortfall / reverse shortfall (capped); null when
+  -- the page has no key list (e.g. discovery). A shortfall is an ANOMALY, not
+  -- necessarily an error — a key can legitimately not exist.
+  missing_keys      jsonb,
+  -- Queue order hint for Procrastinate (higher runs first). Default 0.
+  -- Affects QUEUE ORDER only — not rate limits, not in-flight preemption.
+  priority          integer NOT NULL DEFAULT 0,
   last_error        text,
   created_at        timestamptz NOT NULL DEFAULT now(),
   updated_at        timestamptz NOT NULL DEFAULT now(),
   UNIQUE (request_id, page_no),
-  CHECK (status IN ('pending', 'in_progress', 'done', 'failed', 'dead'))
+  CHECK (status IN ('pending', 'in_progress', 'done', 'failed', 'dead')),
+  CHECK (priority >= 0 AND priority <= 10)
 );
 
 -- ---------------------------------------------------------------------------

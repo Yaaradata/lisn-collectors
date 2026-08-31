@@ -19,8 +19,10 @@ CREATE TABLE IF NOT EXISTS sentinel_incident (
   issue_grandparent_id        integer,
   issue_grandparent_name      text,
   order_id                    text,                      -- e.g. OD438107336320536100
-  order_item_id               numeric,
-  order_item_unit_id          numeric,
+  -- Identifiers, not quantities. Stored as text so values above 2^53 and
+  -- leading-zero forms survive; never float/numeric on the wire or in BQ.
+  order_item_id               text,
+  order_item_unit_id          text,
   -- tracking_id is deliberately nullable: ~14% of real incidents have no
   -- tracking ID and require a separate FDP lookup; the collector must exercise
   -- that path.
@@ -59,7 +61,7 @@ CREATE TABLE IF NOT EXISTS sentinel_thread (
   incident_id             text NOT NULL REFERENCES sentinel_incident(id) ON DELETE CASCADE,
   channel_id              integer,       -- 5 Outbound, 9 Email, 1005 Proactive
   channel_name            text,
-  communication_id        numeric,
+  communication_id        text,          -- identifier; text, never float
   content_type            text,          -- 'text/plain'
   created_at              timestamptz,
   created_by              text,          -- fk_crm_automation, abdul.wahid
@@ -86,3 +88,34 @@ CREATE INDEX IF NOT EXISTS idx_sentinel_incident_tracking_id
 
 CREATE INDEX IF NOT EXISTS idx_sentinel_incident_issue_name
   ON sentinel_incident (issue_name);
+
+-- Upgrade path: older mocks stored these as numeric. Only alter when still
+-- numeric — a fresh text column must not be rewritten (trimming would eat
+-- trailing zeros on digit-string IDs like '1000').
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'sentinel_incident'
+      AND column_name = 'order_item_id'
+      AND data_type = 'numeric'
+  ) THEN
+    ALTER TABLE sentinel_incident
+      ALTER COLUMN order_item_id TYPE text
+        USING regexp_replace(order_item_id::text, '\.0+$', ''),
+      ALTER COLUMN order_item_unit_id TYPE text
+        USING regexp_replace(order_item_unit_id::text, '\.0+$', '');
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'sentinel_thread'
+      AND column_name = 'communication_id'
+      AND data_type = 'numeric'
+  ) THEN
+    ALTER TABLE sentinel_thread
+      ALTER COLUMN communication_id TYPE text
+        USING regexp_replace(communication_id::text, '\.0+$', '');
+  END IF;
+END$$;

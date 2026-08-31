@@ -15,12 +15,21 @@ import logging
 import os
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Self
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from google.cloud import bigquery
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+from pydantic.types import StrictStr
 
 from collector.admin_reset import (
     RESET_BQ_TABLES,
@@ -33,6 +42,15 @@ from collector.admin_reset import (
 )
 from collector.app import app as procrastinate_app
 from collector.db import connect
+from collector.discovery_gaps import (
+    axes_from_query_spec,
+    check_submit_contiguity,
+    gap_summary,
+    insert_discovery_windows,
+    list_gaps,
+)
+from collector.redact import redact_secrets
+from collector.shortfall import requested_count as page_requested_count
 from collector.sources import get
 from collector.tasks import fetch_page
 
@@ -71,9 +89,122 @@ def _row_dict(columns: tuple[str, ...], row: tuple[Any, ...]) -> dict[str, Any]:
     return {col: _jsonable(val) for col, val in zip(columns, row, strict=True)}
 
 
+# Pydantic 2.13 (via fastapi==0.115.*) already rejects a bare str for list[str]
+# without full-model strict=True. Full-model strict breaks ISO datetime strings
+# on DiscoveryQuery. StrictStr on list elements blocks int→str coercion; verified
+# that incident_ids="IN2608" and incident_ids=[1] both raise.
+class SentinelKeyQuery(BaseModel):
+    """Enrichment query: exactly one of the three key lists."""
+
+    model_config = ConfigDict(extra="forbid")
+    # extra=forbid: a caller sending a field we ignore believes it took effect.
+
+    incident_ids: list[StrictStr] | None = None
+    order_item_ids: list[StrictStr] | None = None
+    order_ids: list[StrictStr] | None = None
+
+    @model_validator(mode="after")
+    def exactly_one_key_list(self) -> Self:
+        supplied: list[str] = []
+        if self.incident_ids:
+            supplied.append("incident_ids")
+        if self.order_item_ids:
+            supplied.append("order_item_ids")
+        if self.order_ids:
+            supplied.append("order_ids")
+        if len(supplied) > 1:
+            raise ValueError(
+                "exactly one of incident_ids, order_item_ids, order_ids required; "
+                f"got {', '.join(supplied)}"
+            )
+        if not supplied:
+            raise ValueError(
+                "incident_ids, order_item_ids or order_ids required — no generic queries"
+            )
+        return self
+
+
+class DiscoveryQuery(BaseModel):
+    """Discovery filter query (sentinel_discovery)."""
+
+    model_config = ConfigDict(extra="forbid")
+    # extra=forbid: a caller sending a field we ignore believes it took effect
+    # (e.g. order_item_ids on a discovery request must 400, not be dropped).
+
+    updated_from: datetime | None = None
+    updated_to: datetime | None = None
+    created_from: datetime | None = None
+    created_to: datetime | None = None
+    statuses: list[StrictStr] | None = None
+    issue_names: list[StrictStr] | None = None
+    limit: int = 1000
+
+    @field_validator("limit")
+    @classmethod
+    def limit_range(cls, value: int) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"limit must be an int, got {value!r}")
+        if value < 1 or value > 5000:
+            raise ValueError(f"limit must be between 1 and 5000, got {value}")
+        return value
+
+    @model_validator(mode="after")
+    def window_bounds_strict(self) -> Self:
+        # discovery_window CHECK (window_from < window_to) — reject equals too.
+        for start, end, label in (
+            (self.updated_from, self.updated_to, "updated"),
+            (self.created_from, self.created_to, "created"),
+        ):
+            if start is not None and end is not None and not start < end:
+                raise ValueError(
+                    f"{label}_from must be strictly before {label}_to"
+                )
+        return self
+
+
 class CollectBody(BaseModel):
     source: str
-    query_spec: dict[str, Any] = Field(default_factory=dict)
+    query_spec: SentinelKeyQuery | DiscoveryQuery
+    # Discovery only: REJECT BY DEFAULT when the new window skips past the
+    # latest completed window_to. A scheduler misfire should be loud — this is
+    # the difference between the collector silently doing what it was told and
+    # the collector telling you that what you asked for skips an hour.
+    allow_gap: bool = False
+    gap_reason: str | None = None
+    # Queue order only (Procrastinate priority DESC). Default 0.
+    # Does NOT bypass min_interval_s, does NOT preempt in-flight pages — the
+    # realistic gain is waiting for the next free worker instead of the whole
+    # backlog. The fast lane only works while it stays short (see flood guard).
+    priority: int = Field(default=0, ge=0, le=10)
+
+    @model_validator(mode="before")
+    @classmethod
+    def bind_typed_query_spec(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        source = data.get("source")
+        raw = data.get("query_spec", {})
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, dict):
+            raise ValueError("query_spec must be an object")
+        if source == "sentinel":
+            return {**data, "query_spec": SentinelKeyQuery.model_validate(raw)}
+        if source == "sentinel_discovery":
+            return {**data, "query_spec": DiscoveryQuery.model_validate(raw)}
+        # Unknown source: still type as key-query shape so loose dicts cannot
+        # slip through; get() then raises ValueError naming known sources.
+        return {**data, "query_spec": SentinelKeyQuery.model_validate(raw)}
+
+    @model_validator(mode="after")
+    def gap_reason_required_when_allowing(self) -> Self:
+        if self.allow_gap and self.source == "sentinel_discovery":
+            if not (self.gap_reason and str(self.gap_reason).strip()):
+                raise ValueError(
+                    "gap_reason is required when allow_gap=true "
+                    "(say why the skipped range is intentional)"
+                )
+        return self
 
 
 class AdminResetBody(BaseModel):
@@ -82,6 +213,32 @@ class AdminResetBody(BaseModel):
     dry_run: bool = True
     # Resetting mid-run leaves workers writing into emptied tables.
     force: bool = False
+
+
+def _validation_detail(errors: list[dict[str, Any]]) -> str:
+    """Flatten Pydantic/FastAPI errors into one message that names fields."""
+    parts: list[str] = []
+    for err in errors:
+        loc = err.get("loc") or ()
+        # Drop the "body" prefix FastAPI adds.
+        path = ".".join(str(x) for x in loc if x != "body")
+        msg = str(err.get("msg") or "invalid")
+        parts.append(f"{path}: {msg}" if path else msg)
+    return "; ".join(parts) if parts else "invalid request"
+
+
+@api.exception_handler(RequestValidationError)
+async def _request_validation_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    # /v1/collect must stay on 400 (LiSN + acceptance tests); other routes keep
+    # FastAPI's default 422.
+    if request.method == "POST" and request.url.path.rstrip("/") == "/v1/collect":
+        return JSONResponse(
+            status_code=400,
+            content={"detail": _validation_detail(list(exc.errors()))},
+        )
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 def _caller_identity(request: Request) -> str:
@@ -93,19 +250,91 @@ def _caller_identity(request: Request) -> str:
 
 
 def _page_key_count(payload: dict[str, Any]) -> int:
-    for field in ("incident_ids", "order_ids"):
-        if field in payload and isinstance(payload[field], list):
-            return len(payload[field])
-    return 0
+    return page_requested_count(payload)
 
 
-@api.post("/v1/collect")
+def _query_spec_dict(query: SentinelKeyQuery | DiscoveryQuery) -> dict[str, Any]:
+    return query.model_dump(mode="json", exclude_none=True)
+
+
+@api.post(
+    "/v1/collect",
+    summary="Accept a collect or discovery request",
+    description=(
+        "Splits the query into pages, stores collector_job rows, and defers "
+        "Procrastinate work.\n\n"
+        "**priority** (0–10, default 0) affects QUEUE ORDER only "
+        "(Procrastinate `ORDER BY priority DESC`). It does NOT bypass the "
+        "per-source rate limit: an urgent page still waits for a free worker "
+        "slot and still sleeps `min_interval_s`. It does NOT preempt a page "
+        "already in flight. The realistic gain is waiting for the next free "
+        "worker instead of the whole backlog. Priority above 5 is rejected "
+        "when the request expands to more than 20 pages — the fast lane only "
+        "works while it stays short."
+    ),
+)
 def collect(body: CollectBody) -> dict[str, Any]:
+    query_spec = _query_spec_dict(body.query_spec)
+    overlap_warnings: list[str] = []
+
+    # Discovery submit-time contiguity guard — before plan/insert.
+    if body.source == "sentinel_discovery":
+        for axis in axes_from_query_spec(query_spec):
+            check = check_submit_contiguity(source=body.source, axis=axis)
+            if check.gap_from is not None and check.gap_to is not None:
+                # REJECT BY DEFAULT. allow_gap=true is the explicit override.
+                if not body.allow_gap:
+                    dur = check.gap_duration or (check.gap_to - check.gap_from)
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "message": (
+                                "discovery window skips past the latest completed "
+                                f"{check.field} window — refusing by default so a "
+                                "scheduler misfire is loud"
+                            ),
+                            "source": body.source,
+                            "window_field": check.field,
+                            "gap_from": check.gap_from.isoformat(),
+                            "gap_to": check.gap_to.isoformat(),
+                            "gap_duration": str(dur),
+                            "gap_duration_seconds": dur.total_seconds(),
+                            "hint": (
+                                "pass allow_gap=true with gap_reason to accept; "
+                                "gaps are reported on /v1/discovery/gaps and are "
+                                "never auto-backfilled"
+                            ),
+                        },
+                    )
+            if check.overlap_with_to is not None:
+                # Overlap is not a gap — re-collection is safe and sometimes
+                # deliberate. Surface as a warning; do not reject.
+                overlap_warnings.append(
+                    f"{check.field} window starts before latest completed "
+                    f"window_to={check.overlap_with_to.isoformat()} "
+                    "(overlap; not rejected)"
+                )
+
     try:
         src = get(body.source)
-        pages = src.plan(body.query_spec)
+        pages = src.plan(query_spec)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400, detail=redact_secrets(str(exc))
+        ) from exc
+
+    # Flood guard: priority > 5 with a large page fan-out recreates the
+    # backlog problem with extra steps. The fast lane only works while it
+    # stays short (~20 pages / 1,000 keys at batch_cap=50).
+    if body.priority > 5 and len(pages) > 20:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"priority {body.priority} rejected for {len(pages)} pages — "
+                "the fast lane is for small urgent requests "
+                "(priority > 5 requires ≤ 20 pages / ~1000 keys)"
+            ),
+        )
 
     # plan() runs HERE, once, at request time. It is never called again.
     # Recovery re-reads the stored page_payload rather than recomputing, so a
@@ -129,7 +358,7 @@ def collect(body: CollectBody) -> dict[str, Any]:
                 (
                     request_id,
                     body.source,
-                    json.dumps(body.query_spec),
+                    json.dumps(query_spec),
                     len(pages),
                 ),
             )
@@ -139,9 +368,10 @@ def collect(body: CollectBody) -> dict[str, Any]:
                 cur.execute(
                     """
                     INSERT INTO collector_job (
-                      job_id, request_id, source, page_no, page_payload, status
+                      job_id, request_id, source, page_no, page_payload,
+                      status, requested_count, priority
                     )
-                    VALUES (%s, %s, %s, %s, %s::jsonb, 'pending')
+                    VALUES (%s, %s, %s, %s, %s::jsonb, 'pending', %s, %s)
                     """,
                     (
                         job_id,
@@ -149,22 +379,43 @@ def collect(body: CollectBody) -> dict[str, Any]:
                         body.source,
                         page.page_no,
                         json.dumps(page.payload),
+                        page_requested_count(page.payload),
+                        body.priority,
                     ),
                 )
         conn.commit()
+
+    if body.source == "sentinel_discovery":
+        insert_discovery_windows(
+            request_id=request_id,
+            source=body.source,
+            query_spec=query_spec,
+            allow_gap=body.allow_gap,
+            gap_reason=body.gap_reason,
+        )
 
     with procrastinate_app.open():
         for job_id in job_ids:
             # Queue name == source name (contract). Discovery and enrichment
             # workers listen on different queues; defer must match.
-            fetch_page.configure(queue=body.source).defer(job_id=str(job_id))
+            # priority → procrastinate_jobs.priority (ORDER BY priority DESC).
+            fetch_page.configure(
+                queue=body.source, priority=body.priority
+            ).defer(job_id=str(job_id))
 
     total_keys = sum(_page_key_count(page.payload) for page in pages)
-    return {
+    out: dict[str, Any] = {
         "request_id": str(request_id),
         "total_pages": len(pages),
         "keys": total_keys,
+        "priority": body.priority,
     }
+    if overlap_warnings:
+        out["warnings"] = overlap_warnings
+    if body.allow_gap and body.source == "sentinel_discovery":
+        out["allow_gap"] = True
+        out["gap_reason"] = body.gap_reason
+    return out
 
 
 @api.get("/v1/requests/{request_id}/counts")
@@ -183,14 +434,30 @@ def request_counts(request_id: str) -> dict[str, Any]:
             counts = {status: count for status, count in cur.fetchall()}
             cur.execute(
                 """
-                SELECT coalesce(sum(record_count), 0)::int
+                SELECT
+                  coalesce(sum(record_count), 0)::int,
+                  coalesce(sum(requested_count), 0)::int,
+                  coalesce(sum(returned_count), 0)::int
                 FROM collector_job
                 WHERE request_id = %s::uuid
                 """,
                 (request_id,),
             )
-            records = int(cur.fetchone()[0])
-    return {"request_id": request_id, "counts": counts, "records": records}
+            records, requested, returned = cur.fetchone()
+            records = int(records)
+            requested = int(requested)
+            returned = int(returned)
+    # missing = shortfall of distinct source entities vs keys asked.
+    # A shortfall is not necessarily an error — a key can legitimately not
+    # exist. It is an ANOMALY worth surfacing, not a failure worth alerting on.
+    return {
+        "request_id": request_id,
+        "counts": counts,
+        "records": records,
+        "requested": requested,
+        "returned": returned,
+        "missing": requested - returned,
+    }
 
 
 @api.get(
@@ -314,7 +581,7 @@ def request_results(request_id: str) -> dict[str, Any]:
             except Exception as exc:  # noqa: BLE001
                 raise HTTPException(
                     status_code=502,
-                    detail=f"BigQuery results failed: {exc}",
+                    detail=f"BigQuery results failed: {redact_secrets(str(exc))}",
                 ) from exc
 
     return {
@@ -382,7 +649,10 @@ def discovered_pending(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=502,
-            detail=f"discovered/pending BigQuery failed: {exc}",
+            detail=(
+                f"discovered/pending BigQuery failed: "
+                f"{redact_secrets(str(exc))}"
+            ),
         ) from exc
 
     ids = [str(row.incident_id) for row in rows if row.incident_id is not None]
@@ -481,6 +751,38 @@ def dead_letter() -> dict[str, Any]:
     return {"dead": len(rows), "rows": rows}
 
 
+@api.get(
+    "/v1/discovery/gaps",
+    summary="Contiguity gaps between completed discovery windows",
+    description=(
+        "Lists ranges where completed discovery windows are not contiguous "
+        "(sql/011_discovery_gaps.sql). Failed and running windows are excluded "
+        "from the chain so a failed window surfaces as a gap — intentional. "
+        "This endpoint REPORTS gaps only; it does not collect or backfill them. "
+        "Deciding to backfill is a scheduling decision and belongs with LiSN — "
+        "gaps do not self-heal."
+    ),
+)
+def discovery_gaps(
+    source: str | None = Query(None, description="Filter by source name"),
+    range_from: datetime | None = Query(
+        None, description="Only gaps that end after this instant"
+    ),
+    range_to: datetime | None = Query(
+        None, description="Only gaps that start before this instant"
+    ),
+) -> dict[str, Any]:
+    gaps = list_gaps(source=source, range_from=range_from, range_to=range_to)
+    return {
+        "gaps": gaps,
+        "count": len(gaps),
+        "note": (
+            "Gaps are reported, not backfilled. Schedule catch-up from LiSN "
+            "if the missing range must be collected."
+        ),
+    }
+
+
 @api.get("/v1/health/detail")
 def health_detail() -> dict[str, Any]:
     with connect() as conn:
@@ -567,6 +869,26 @@ def health_detail() -> dict[str, Any]:
             )
             dead = cur.fetchone()[0]
 
+            # Shortfall pages: done pages where fewer distinct entities came
+            # back than keys asked. A shortfall is an ANOMALY worth surfacing,
+            # not a failure worth alerting on — keys can legitimately not exist.
+            cur.execute(
+                """
+                SELECT count(*)::int
+                FROM collector_job
+                WHERE status = 'done'
+                  AND requested_count IS NOT NULL
+                  AND returned_count IS NOT NULL
+                  AND returned_count < requested_count
+                """
+            )
+            shortfall_pages = cur.fetchone()[0]
+
+    # discovery_gaps: the surface that previously showed all zeros while
+    # skipped windows lost incidents. This is the specific thing the gap
+    # ledger exists to change. Gaps are anomalies to surface — not auto-healed.
+    discovery = gap_summary()
+
     return {
         "counts": by_source_status,
         "stuck": stuck,
@@ -575,6 +897,8 @@ def health_detail() -> dict[str, Any]:
         "workers": workers,
         "unloaded": unloaded,
         "dead": dead,
+        "shortfall_pages": shortfall_pages,
+        "discovery_gaps": discovery,
     }
 
 
@@ -711,7 +1035,7 @@ def admin_sample_ids(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=502,
-            detail=f"BigQuery sample-ids failed: {exc}",
+            detail=f"BigQuery sample-ids failed: {redact_secrets(str(exc))}",
         ) from exc
 
     ids = [str(row.id) for row in rows if row.id is not None]

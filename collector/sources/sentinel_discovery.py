@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from collector.contract import Page, RawResponse, Record
+from collector.contract import MalformedSourcePayload, Page, RawResponse, Record
 from collector.http import get_client
 
 MAX_WINDOW = timedelta(days=15)
@@ -183,7 +183,27 @@ class SentinelDiscoveryCollector:
         return RawResponse(body=raw, content_type="application/json")
 
     def parse(self, raw: RawResponse, page: Page) -> list[Record]:
+        # Shape checks belong HERE, not in fetch(). fetch() returns (or builds)
+        # raw bytes that land in GCS unmodified — evidence of what the source
+        # sent — even when the payload is garbage. Validation runs after that
+        # write so a string mistaken for a list cannot silently become
+        # character-level "records".
         doc = json.loads(raw.body.decode("utf-8"))
+        if not isinstance(doc, dict):
+            raise MalformedSourcePayload(
+                f"sentinel_discovery returned {type(doc).__name__}, expected dict"
+            )
+        if "pages" not in doc:
+            raise MalformedSourcePayload(
+                "sentinel_discovery response missing 'pages'"
+            )
+        pages = doc["pages"]
+        if not isinstance(pages, list):
+            raise MalformedSourcePayload(
+                f"sentinel_discovery returned pages as {type(pages).__name__}, "
+                "expected list"
+            )
+
         filter_spec = doc.get("filter") or page.payload
         fhash = _filter_hash(filter_spec)
         discovered_at = datetime.now(timezone.utc).isoformat()
@@ -192,13 +212,34 @@ class SentinelDiscoveryCollector:
         cursor_page_cap = int(doc.get("cursor_page_cap") or CURSOR_PAGE_CAP)
 
         records: list[Record] = []
-        for chunk in doc.get("pages") or []:
-            for incident_id in chunk.get("incident_ids") or []:
+        for page_index, chunk in enumerate(pages):
+            if not isinstance(chunk, dict):
+                raise MalformedSourcePayload(
+                    f"sentinel_discovery pages[{page_index}] is "
+                    f"{type(chunk).__name__}, expected dict"
+                )
+            if "incident_ids" not in chunk:
+                raise MalformedSourcePayload(
+                    f"sentinel_discovery pages[{page_index}] missing 'incident_ids'"
+                )
+            incident_ids = chunk["incident_ids"]
+            if not isinstance(incident_ids, list):
+                raise MalformedSourcePayload(
+                    f"sentinel_discovery returned incident_ids as "
+                    f"{type(incident_ids).__name__}, expected list"
+                )
+            for index, incident_id in enumerate(incident_ids):
+                if not isinstance(incident_id, str):
+                    raise MalformedSourcePayload(
+                        f"sentinel_discovery pages[{page_index}]."
+                        f"incident_ids[{index}] is {type(incident_id).__name__}, "
+                        "expected str"
+                    )
                 records.append(
                     Record(
-                        key=str(incident_id),
+                        key=incident_id,
                         data={
-                            "incident_id": str(incident_id),
+                            "incident_id": incident_id,
                             "discovered_at": discovered_at,
                             "filter_hash": fhash,
                             "cursor_page": page.page_no,

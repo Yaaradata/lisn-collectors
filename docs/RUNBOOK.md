@@ -51,6 +51,35 @@ are not yet in `incidents_current`. That decision is a **business** rule
 (staleness, issue-type policy) and lives in SQL for LiSN — the collector stays
 dumb and only collects what it is told.
 
+### Why the raw zone exists (used in anger)
+
+Landing tables can be wrong. Ours were: `orderItemId` / `orderItemUnitId` /
+`threads_communicationId` were mapped through `float` / `FLOAT64` and values
+above 2^53 silently mutated. We did **not** re-query Sentinel. We re-parsed
+every object under `gs://$BUCKET/raw/source=sentinel/` with the corrected
+`parse()` and batch-loaded `sentinel_raw.incidents_v2`, preserving
+`_request_id`, `_page_no`, `_raw_uri`, and original `_ingested_at` from
+`raw_manifest.written_at`. That recovery is `scripts/36_backfill_ids.py`.
+
+The append-only raw zone is the evidence store. This is the strongest argument
+for the design — a field-mapping mistake is recoverable without asking the
+source again. Keep `sentinel_raw.incidents_pre_id_fix` after the swap as
+evidence of what the defect produced; drop it after the pilot.
+
+If BigQuery refuses `ALTER TABLE … RENAME` because of a streaming buffer,
+`scripts/36_backfill_ids.py --swap` falls back to
+`CREATE TABLE incidents_pre_id_fix AS SELECT * FROM incidents` and serves
+from `incidents_v2` until the buffer drains. The collector’s `bq_table` then
+targets `incidents_v2`. After the buffer clears, rename
+`incidents` → `incidents_zombie`, `incidents_v2` → `incidents`, and restore
+`bq_table` to `sentinel_raw.incidents`.
+
+```bash
+python scripts/36_backfill_ids.py           # backfill + reconcile
+python scripts/36_backfill_ids.py --swap    # rename v2 → incidents (keeps old)
+python scripts/36_backfill_ids.py --verify  # probes + fresh collect + reconcile
+```
+
 ### Demo
 
 ```bash

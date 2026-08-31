@@ -1,6 +1,17 @@
+import logging
 import os
+import sys
 
 import procrastinate
+from procrastinate import utils
+from procrastinate.psycopg_connector import PsycopgConnector
+
+from collector.db import (
+    DB_CONNECT_TIMEOUT_S,
+    dsn_for_log,
+    pool_kwargs,
+    wait_for_db,
+)
 
 # Identity is derived from the source plus a STABLE Cloud Run value, never from
 # a hostname or a UUID. With jobs, CLOUD_RUN_TASK_INDEX is deterministic across
@@ -18,6 +29,77 @@ elif instance:
 else:
     WORKER_ID = f"{source}-local"
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:%(name)s:%(message)s",
+)
+logger = logging.getLogger("collector.app")
+
+# Diagnosable from logs alone on a failed task — password redacted via Pass 1.
+_DSN = os.environ["COLLECTOR_DSN"]
+logger.warning(
+    "collector starting worker_id=%s dsn=%s DB_CONNECT_TIMEOUT_S=%.0f "
+    "(pool getconn timeout raised 30s→%.0f; reconnect_timeout kept/set %.0f; "
+    "open(wait) timeout raised 30s→%.0f; check_connection already enabled "
+    "by Procrastinate)",
+    WORKER_ID,
+    dsn_for_log(_DSN),
+    DB_CONNECT_TIMEOUT_S,
+    DB_CONNECT_TIMEOUT_S,
+    DB_CONNECT_TIMEOUT_S,
+    DB_CONNECT_TIMEOUT_S,
+)
+
+
+def _should_preflight() -> bool:
+    """Preflight blocks until DB is up — workers only, never the API import path.
+
+    The API does ``from collector.app import app``; a 300s SystemExit on a blip
+    would take the request surface down. Workers are started as
+    ``python -m procrastinate … worker`` or with CLOUD_RUN_TASK_INDEX set.
+    """
+    flag = os.environ.get("COLLECTOR_DB_PREFLIGHT", "").strip().lower()
+    if flag in ("0", "false", "no"):
+        return False
+    if flag in ("1", "true", "yes"):
+        return True
+    if os.environ.get("CLOUD_RUN_TASK_INDEX") is not None:
+        return True
+    return "worker" in sys.argv
+
+
+if _should_preflight():
+    # Do not hand Procrastinate a pool until the DB answers. Without this,
+    # open(wait=True) used the hard-coded 30s default and exited on Cloud SQL
+    # maintenance (col-maintenance-qmd84). Retries with backoff up to budget.
+    wait_for_db(_DSN)
+
+
+class _ResilientPsycopgConnector(PsycopgConnector):
+    """Open the pool with the connect budget, not the 30s open() default.
+
+    Procrastinate calls ``await pool.open(wait=True)`` with no timeout kwarg,
+    which defaults to 30 seconds ("pool initialization incomplete after 30.0
+    sec"). Even after a successful preflight the DB can flap; keep the same
+    budget on open-wait. Mid-run drops are handled by check_connection +
+    reconnect_timeout (see collector.db.pool_kwargs).
+    """
+
+    async def open_async(self, pool=None):  # type: ignore[no-untyped-def]
+        if self._async_pool:
+            return
+        if self._sync_connector is not None:
+            await utils.sync_to_async(self._sync_connector.close)
+            self._sync_connector = None
+        if pool:
+            self._pool_externally_set = True
+            self._async_pool = pool
+        else:
+            self._async_pool = await self._create_pool(self._pool_args)
+            assert self._async_pool
+            await self._async_pool.open(wait=True, timeout=DB_CONNECT_TIMEOUT_S)
+
+
 # PsycopgConnector is the async psycopg3 connector and the current default.
 # SyncPsycopgConnector exists for purely synchronous callers;
 # Psycopg2Connector and AiopgConnector are legacy.
@@ -27,8 +109,9 @@ else:
 #   deployed postgresql://postgres:PW@/collector?host=/cloudsql/<CONN>
 # The deployed form is what lives in the collector-dsn secret.
 app = procrastinate.App(
-    connector=procrastinate.PsycopgConnector(
-        conninfo=os.environ["COLLECTOR_DSN"],
+    connector=_ResilientPsycopgConnector(
+        conninfo=_DSN,
+        **pool_kwargs(),
     ),
     import_paths=["collector.tasks"],
 )

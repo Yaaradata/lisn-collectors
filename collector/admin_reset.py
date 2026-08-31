@@ -17,8 +17,14 @@ from google.auth import default as google_auth_default
 from google.cloud import bigquery, storage
 
 from collector.db import connect
+from collector.redact import redact_secrets
 
 log = logging.getLogger(__name__)
+
+
+def _exc_text(exc: BaseException) -> str:
+    """Exception text safe to return in API bodies / warnings."""
+    return redact_secrets(str(exc))
 
 # HARD ALLOWLIST — explicit; never derived.
 RESET_CONFIRM_PHRASE = "reset-collector-data"
@@ -26,12 +32,15 @@ RESET_CONFIRM_PHRASE = "reset-collector-data"
 RESET_CLOUD_SQL_TABLES: list[str] = [
     "raw_manifest",
     "collector_job",
+    "discovery_window",  # FK → collector_request; truncate with the chain
     "collector_request",
     "collector_control",  # truncate only if the relation exists
 ]
 
 RESET_BQ_TABLES: list[str] = [
     "sentinel_raw.incidents",
+    "sentinel_raw.incidents_v2",
+    "sentinel_raw.incidents_pre_id_fix",
     "sentinel_raw.discovered_ids",
 ]
 
@@ -61,7 +70,7 @@ def _live_sample_counts() -> tuple[int | None, int | None, str | None]:
                 threads = int(cur.fetchone()[0])
         return incidents, threads, None
     except Exception as exc:  # noqa: BLE001
-        return None, None, str(exc)
+        return None, None, _exc_text(exc)
 
 
 def _preserved_sample_counts(warnings: list[str]) -> dict[str, int | None]:
@@ -126,7 +135,7 @@ def acting_identity() -> str:
             return f"serviceAccount:{sa}"
         return f"adc_user project={project or os.environ.get('PROJECT', '?')}"
     except Exception as exc:  # noqa: BLE001
-        return f"identity_unknown ({exc})"
+        return f"identity_unknown ({_exc_text(exc)})"
 
 
 def _project() -> str:
@@ -299,13 +308,13 @@ def collect_live_state(warnings: list[str] | None = None) -> dict[str, Any]:
                     for wid, age in cur.fetchall()
                 ]
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"Cloud SQL state read failed: {exc}")
+        warnings.append(f"Cloud SQL state read failed: {_exc_text(exc)}")
 
     if bucket:
         try:
             out["gcs_objects_raw"] = _count_gcs_raw(bucket, project or None)
         except Exception as exc:  # noqa: BLE001
-            warnings.append(f"GCS state read failed: {exc}")
+            warnings.append(f"GCS state read failed: {_exc_text(exc)}")
     else:
         warnings.append("RAW_BUCKET/BUCKET unset")
 
@@ -316,7 +325,7 @@ def collect_live_state(warnings: list[str] | None = None) -> dict[str, Any]:
             try:
                 out["bigquery"][rel] = _count_bq_table(client, table_id)
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"BigQuery count {table_id} failed: {exc}")
+                warnings.append(f"BigQuery count {table_id} failed: {_exc_text(exc)}")
                 out["bigquery"][rel] = None
         # Distinct incidents in the enrichment landing table (thread-exploded).
         try:
@@ -330,10 +339,10 @@ def collect_live_state(warnings: list[str] | None = None) -> dict[str, Any]:
                 )[0].n
             )
         except Exception as exc:  # noqa: BLE001
-            warnings.append(f"BigQuery distinct incidents failed: {exc}")
+            warnings.append(f"BigQuery distinct incidents failed: {_exc_text(exc)}")
             out["bigquery_distinct"]["sentinel_raw.incidents"] = None
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"BigQuery client failed: {exc}")
+        warnings.append(f"BigQuery client failed: {_exc_text(exc)}")
 
     out["warnings"] = warnings
     return out
@@ -397,7 +406,7 @@ def collect_before_counts(warnings: list[str]) -> dict[str, Any]:
                     cur, "SELECT count(*)::int FROM procrastinate_workers"
                 )
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"Cloud SQL before-counts failed: {exc}")
+        warnings.append(f"Cloud SQL before-counts failed: {_exc_text(exc)}")
 
     if bucket:
         try:
@@ -409,7 +418,7 @@ def collect_before_counts(warnings: list[str]) -> dict[str, Any]:
                 "prefix": GCS_RAW_PREFIX,
             }
         except Exception as exc:  # noqa: BLE001
-            warnings.append(f"GCS before-count failed: {exc}")
+            warnings.append(f"GCS before-count failed: {_exc_text(exc)}")
             cleared["gcs_objects"] = {
                 "before": None,
                 "bucket": bucket,
@@ -432,7 +441,7 @@ def collect_before_counts(warnings: list[str]) -> dict[str, Any]:
                     "location": _region(),
                 }
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"BigQuery before-count {table_id} failed: {exc}")
+                warnings.append(f"BigQuery before-count {table_id} failed: {_exc_text(exc)}")
                 cleared[rel] = {
                     "before": None,
                     "would_truncate": False,
@@ -440,7 +449,7 @@ def collect_before_counts(warnings: list[str]) -> dict[str, Any]:
                     "location": _region(),
                 }
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"BigQuery before-counts failed: {exc}")
+        warnings.append(f"BigQuery before-counts failed: {_exc_text(exc)}")
 
     sample = _preserved_sample_counts(warnings)
     preserved.update(sample)
@@ -513,8 +522,8 @@ def _truncate_cloud_sql(cleared: dict[str, Any], warnings: list[str]) -> None:
                         )
             conn.commit()
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"Cloud SQL truncate failed: {exc}")
-        log.exception("stage=cloud_sql FAILED")
+        warnings.append(f"Cloud SQL truncate failed: {_exc_text(exc)}")
+        log.exception("stage=cloud_sql FAILED: %s", _exc_text(exc))
         # Re-read whatever is left — never invent after=0.
         try:
             with connect() as conn:
@@ -525,7 +534,7 @@ def _truncate_cloud_sql(cleared: dict[str, Any], warnings: list[str]) -> None:
                                 cur, name
                             )
         except Exception as re_exc:  # noqa: BLE001
-            warnings.append(f"Cloud SQL after-count re-read failed: {re_exc}")
+            warnings.append(f"Cloud SQL after-count re-read failed: {_exc_text(re_exc)}")
 
 
 def _clear_procrastinate(cleared: dict[str, Any], warnings: list[str]) -> None:
@@ -591,8 +600,8 @@ def _clear_procrastinate(cleared: dict[str, Any], warnings: list[str]) -> None:
             jobs_after,
         )
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"Procrastinate clear failed: {exc}")
-        log.exception("stage=procrastinate FAILED")
+        warnings.append(f"Procrastinate clear failed: {_exc_text(exc)}")
+        log.exception("stage=procrastinate FAILED: %s", _exc_text(exc))
         try:
             with connect() as conn:
                 with conn.cursor() as cur:
@@ -609,7 +618,7 @@ def _clear_procrastinate(cleared: dict[str, Any], warnings: list[str]) -> None:
                         "SELECT count(*)::int FROM procrastinate_periodic_defers",
                     )
         except Exception as re_exc:  # noqa: BLE001
-            warnings.append(f"Procrastinate after-count re-read failed: {re_exc}")
+            warnings.append(f"Procrastinate after-count re-read failed: {_exc_text(re_exc)}")
 
 
 def _clear_gcs(cleared: dict[str, Any], warnings: list[str]) -> None:
@@ -652,14 +661,14 @@ def _clear_gcs(cleared: dict[str, Any], warnings: list[str]) -> None:
                 f"{after}, expected 0"
             )
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"GCS clear failed: {exc}")
-        log.exception("stage=gcs FAILED prefix=%s", uri)
+        warnings.append(f"GCS clear failed: {_exc_text(exc)}")
+        log.exception("stage=gcs FAILED prefix=%s: %s", uri, _exc_text(exc))
         try:
             after = _count_gcs_raw(bucket_name, project or None)
             cleared.setdefault("gcs_objects", {})["after"] = after
             log.warning("stage=gcs after-count despite failure: %s", after)
         except Exception as re_exc:  # noqa: BLE001
-            warnings.append(f"GCS after-count re-read failed: {re_exc}")
+            warnings.append(f"GCS after-count re-read failed: {_exc_text(re_exc)}")
             cleared.setdefault("gcs_objects", {})["after"] = None
 
 
@@ -701,19 +710,23 @@ def _truncate_bigquery(cleared: dict[str, Any], warnings: list[str]) -> None:
                         f"BigQuery {table_id} after truncate is {after}, expected 0"
                     )
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"BigQuery truncate {rel} failed: {exc}")
-                log.exception("stage=bigquery FAILED table=%s", table_id)
+                warnings.append(f"BigQuery truncate {rel} failed: {_exc_text(exc)}")
+                log.exception(
+                    "stage=bigquery FAILED table=%s: %s",
+                    table_id,
+                    _exc_text(exc),
+                )
                 try:
                     after = _count_bq_table(client, table_id)
                     cleared.setdefault(rel, {})["after"] = after
                 except Exception as re_exc:  # noqa: BLE001
                     warnings.append(
-                        f"BigQuery after-count {table_id} failed: {re_exc}"
+                        f"BigQuery after-count {table_id} failed: {_exc_text(re_exc)}"
                     )
                     cleared.setdefault(rel, {})["after"] = None
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"BigQuery client failed: {exc}")
-        log.exception("stage=bigquery client FAILED")
+        warnings.append(f"BigQuery client failed: {_exc_text(exc)}")
+        log.exception("stage=bigquery client FAILED: %s", _exc_text(exc))
 
 
 def run_reset(*, dry_run: bool, force: bool, caller: str) -> dict[str, Any]:
@@ -756,8 +769,8 @@ def run_reset(*, dry_run: bool, force: bool, caller: str) -> dict[str, Any]:
     try:
         n_in_flight, job_ids = in_progress_jobs()
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"in_progress check failed (Cloud SQL unreachable?): {exc}")
-        log.exception("stage=in_progress_check FAILED")
+        warnings.append(f"in_progress check failed (Cloud SQL unreachable?): {_exc_text(exc)}")
+        log.exception("stage=in_progress_check FAILED: %s", _exc_text(exc))
         return {
             "dry_run": False,
             "success": False,
@@ -783,7 +796,7 @@ def run_reset(*, dry_run: bool, force: bool, caller: str) -> dict[str, Any]:
                     cur, "SELECT count(*)::int FROM procrastinate_workers"
                 )
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"post-reset worker count failed: {exc}")
+        warnings.append(f"post-reset worker count failed: {_exc_text(exc)}")
 
     sample_before = {
         "sentinel_incident": preserved.get("sentinel_incident"),

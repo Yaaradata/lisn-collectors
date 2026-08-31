@@ -6,6 +6,7 @@ Also hosts the Sprint 4 sweeper that recovers stranded Procrastinate jobs
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -16,8 +17,15 @@ from psycopg import errors as pg_errors
 from collector.app import app
 from collector.contract import Page
 from collector.db import connect
+from collector.discovery_gaps import (
+    mark_window_failed,
+    maybe_finalize_window,
+    reconcile_running_windows,
+)
 from collector.load import append_records
 from collector.raw import write_raw
+from collector.redact import redact_secrets
+from collector.shortfall import returned_count, shortfall_keys
 from collector.sources import get
 
 logger = logging.getLogger(__name__)
@@ -39,7 +47,7 @@ def fetch_page(job_id: str, worker_id: str = app.WORKER_ID) -> None:
                 cur.execute(
                     """
                     SELECT job_id::text, request_id::text, source, page_no,
-                           page_payload, status
+                           page_payload, status, coalesce(priority, 0)
                     FROM collector_job
                     WHERE job_id = %s::uuid
                     """,
@@ -55,6 +63,7 @@ def fetch_page(job_id: str, worker_id: str = app.WORKER_ID) -> None:
                     page_no,
                     page_payload,
                     status,
+                    job_priority,
                 ) = row
                 if status in ("done", "dead"):
                     return
@@ -93,9 +102,13 @@ def fetch_page(job_id: str, worker_id: str = app.WORKER_ID) -> None:
                     conn.commit()
                     # Re-defer so a Procrastinate worker picks it up again after
                     # the flag clears (returning success would finish the job).
-                    fetch_page.configure(schedule_in={"seconds": 15}).defer(
-                        job_id=job_id
-                    )
+                    # Preserve priority — otherwise a paused urgent page drops
+                    # to the back of the queue when the flag clears.
+                    fetch_page.configure(
+                        queue=source_name,
+                        schedule_in={"seconds": 15},
+                        priority=int(job_priority),
+                    ).defer(job_id=job_id)
                     return
 
                 src = get(source_name)
@@ -174,6 +187,10 @@ def fetch_page(job_id: str, worker_id: str = app.WORKER_ID) -> None:
         # --- STEP 4 — Parse and load ----------------------------------------
         records = src.parse(raw, page)
         n = append_records(src.bq_table, records, request_id, page_no, uri)
+        # Distinct source entities (not thread rows). See collector_job column
+        # comments: requested_count / returned_count / record_count.
+        entities_returned = returned_count(records, page.payload)
+        keys_delta = shortfall_keys(page, records)
 
         # --- STEP 5 — Complete, LAST ----------------------------------------
         # This UPDATE runs AFTER the BigQuery write commits, never after the
@@ -198,14 +215,24 @@ def fetch_page(job_id: str, worker_id: str = app.WORKER_ID) -> None:
                     SET status = 'done',
                         loaded_at = now(),
                         record_count = %s,
+                        returned_count = %s,
+                        missing_keys = %s::jsonb,
                         lease_expires_at = NULL,
                         last_error = NULL,
                         updated_at = now()
                     WHERE job_id = %s::uuid
                     """,
-                    (n, job_id),
+                    (
+                        n,
+                        entities_returned,
+                        json.dumps(keys_delta) if keys_delta is not None else None,
+                        job_id,
+                    ),
                 )
             conn.commit()
+        if source_name == "sentinel_discovery":
+            # (a) Immediate finalise when all pages for this request are terminal.
+            maybe_finalize_window(request_id)
     except Exception as exc:
         with connect() as conn:
             with conn.cursor() as cur:
@@ -216,7 +243,7 @@ def fetch_page(job_id: str, worker_id: str = app.WORKER_ID) -> None:
                         updated_at = now()
                     WHERE job_id = %s::uuid
                     """,
-                    (str(exc)[:4000], job_id),
+                    (redact_secrets(str(exc))[:4000], job_id),
                 )
             conn.commit()
         raise
@@ -251,7 +278,7 @@ async def _run_sweep() -> dict[str, int]:
                 WHERE status = 'in_progress'
                   AND lease_expires_at < now()
                   AND attempts < 5
-                RETURNING job_id::text, source
+                RETURNING job_id::text, source, coalesce(priority, 0)
                 """
             )
             requeued = cur.fetchall()
@@ -264,18 +291,23 @@ async def _run_sweep() -> dict[str, int]:
                 WHERE status = 'in_progress'
                   AND lease_expires_at < now()
                   AND attempts >= 5
+                RETURNING request_id::text, source
                 """
             )
-            dead_lettered = cur.rowcount
+            dead_rows = cur.fetchall()
+            dead_lettered = len(dead_rows)
+            failed_discovery_requests = {
+                rid for rid, src in dead_rows if src == "sentinel_discovery"
+            }
 
             # THE DOUBLE-RECOVERY TRAP: if Layer A already retried the job, it
             # will re-run fetch_page(job_id) on its own. Deferring another would
             # put two workers on the same page — one wasted call against our
             # Sentinel rate ceiling. The task body is idempotent so nothing
             # corrupts, but a wasted call is still a wasted call.
-            to_defer: list[tuple[str, str]] = []
+            to_defer: list[tuple[str, str, int]] = []
             redefers_skipped = 0
-            for job_id, source in requeued:
+            for job_id, source, priority in requeued:
                 cur.execute(
                     """
                     SELECT 1
@@ -289,11 +321,23 @@ async def _run_sweep() -> dict[str, int]:
                 if cur.fetchone() is not None:
                     redefers_skipped += 1
                 else:
-                    to_defer.append((job_id, source))
+                    to_defer.append((job_id, source, int(priority)))
         conn.commit()
 
-    for job_id, source in to_defer:
-        await fetch_page.configure(queue=source).defer_async(job_id=job_id)
+    for rid in failed_discovery_requests:
+        mark_window_failed(rid)
+
+    # (b) Backstop: any running discovery_window whose pages are already all
+    # terminal (done/dead) gets finalised here — covers the crash window
+    # between page-done commit and maybe_finalize_window in fetch_page.
+    windows_finalised = reconcile_running_windows()
+
+    for job_id, source, priority in to_defer:
+        # Preserve priority on requeue — without this an urgent page recovered
+        # by the sweeper silently drops to the back of the queue (priority 0).
+        await fetch_page.configure(
+            queue=source, priority=priority
+        ).defer_async(job_id=job_id)
 
     result = {
         "stalled_jobs_retried": len(stalled),
@@ -301,6 +345,7 @@ async def _run_sweep() -> dict[str, int]:
         "rows_requeued": len(requeued),
         "rows_dead_lettered": dead_lettered,
         "redefers_skipped": redefers_skipped,
+        "discovery_windows_finalised": windows_finalised,
     }
     if any(result.values()):
         logger.info("sweep %s", result)

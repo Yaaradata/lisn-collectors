@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import subprocess
 import time
 import urllib.request
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from google.cloud.sql.connector import Connector
 
 API_URL = "https://collector-api-mfo5qzthxa-el.a.run.app"
 MOCK_URL = "https://mock-sentinel-mfo5qzthxa-el.a.run.app"
@@ -17,7 +19,7 @@ REGION = "asia-south1"
 SENTINEL_JOB = "col-sentinel"
 DISCOVERY_JOB = "col-sentinel-discovery"
 MAINT_JOB = "col-maintenance"
-EVIDENCE_DIR = Path("/workspace/tests/deployed/evidence")
+EVIDENCE_DIR = Path(__file__).resolve().parent / "evidence"
 
 # Protocol reference population from prior acceptance context (DS-2).
 DS2_POPULATION = 299190
@@ -218,7 +220,7 @@ def _session_cleanup() -> Any:
     _restore_baseline()
 
 
-def test_f1_throughput_floor_60s(tokens: dict[str, str]) -> None:
+def test_throughput_floor_60s(tokens: dict[str, str]) -> None:
     _cancel_running(SENTINEL_JOB)
     exec_name = _start(SENTINEL_JOB, 3)
     time.sleep(12)
@@ -229,12 +231,12 @@ def test_f1_throughput_floor_60s(tokens: dict[str, str]) -> None:
     time.sleep(60)
     elapsed = time.monotonic() - t0
     after = _mock_stats_get(tokens["mock"])
-    assert elapsed >= 60.0, f"F-1 60s floor violated: {elapsed:.3f}s"
+    assert elapsed >= 60.0, f"60s floor violated: {elapsed:.3f}s"
     reqs = max(after - before, 0)
     cps = reqs / elapsed
     ppm_per_worker = (cps * 60.0) / 3.0
     _write_evidence(
-        "F-1",
+        "throughput_floor_60s",
         [
             f"execution={exec_name}",
             f"window_elapsed_s={elapsed:.3f}",
@@ -243,13 +245,13 @@ def test_f1_throughput_floor_60s(tokens: dict[str, str]) -> None:
             f"source_requests_delta={reqs}",
             f"calls_per_second={cps:.6f}",
             f"pages_per_minute_per_worker={ppm_per_worker:.6f}",
-            "scenario_status=recovered",
+            "scenario_status=measurement_only",
         ],
     )
     assert reqs > 0
 
 
-def test_f2_single_page_latency_during_backlog(tokens: dict[str, str]) -> None:
+def test_single_page_latency_during_backlog(tokens: dict[str, str]) -> None:
     ids = _mock_discover_ids(tokens["mock"], need=30000)
     sweep_rid, sweep_pages = _collect(tokens["api"], "sentinel", {"incident_ids": ids})
     probe_ids = ids[:50]
@@ -259,7 +261,7 @@ def test_f2_single_page_latency_during_backlog(tokens: dict[str, str]) -> None:
     probe_elapsed = time.monotonic() - t0
     sweep_terminal = _wait_terminal(tokens["api"], sweep_rid, sweep_pages, timeout_s=7200)
     _write_evidence(
-        "F-2",
+        "single_page_latency_during_backlog",
         [
             f"sweep_request_id={sweep_rid}",
             f"sweep_total_pages={sweep_pages}",
@@ -274,7 +276,7 @@ def test_f2_single_page_latency_during_backlog(tokens: dict[str, str]) -> None:
     assert int(probe_terminal.get("counts", {}).get("done", 0)) == probe_pages
 
 
-def test_f3_run_to_conclusion_and_30m_capacity(tokens: dict[str, str]) -> None:
+def test_run_to_conclusion_and_30m_capacity(tokens: dict[str, str]) -> None:
     all_ids = list(dict.fromkeys(_mock_discover_ids(tokens["mock"], need=None)))
     t0 = time.monotonic()
     rid, total_pages = _collect(tokens["api"], "sentinel", {"incident_ids": all_ids})
@@ -286,9 +288,9 @@ def test_f3_run_to_conclusion_and_30m_capacity(tokens: dict[str, str]) -> None:
     pages_per_min_per_worker = pages_per_min_total / 3.0
     pop_ceiling_30m = int(math.floor(pages_per_min_per_worker * 3.0 * 30.0 * BATCH_CAP))
     margin_vs_ds2 = pop_ceiling_30m - DS2_POPULATION
-    status = "recovered" if margin_vs_ds2 >= 0 else "recovered_with_delay"
+    status = "capacity_ok" if margin_vs_ds2 >= 0 else "capacity_short"
     _write_evidence(
-        "F-3",
+        "run_to_conclusion_and_30m_capacity",
         [
             f"request_id={rid}",
             f"total_pages={total_pages}",
@@ -306,7 +308,7 @@ def test_f3_run_to_conclusion_and_30m_capacity(tokens: dict[str, str]) -> None:
     assert done == total_pages
 
 
-def test_f5_discovery_and_enrichment_parallel_rate(tokens: dict[str, str]) -> None:
+def test_discovery_and_enrichment_parallel_rate(tokens: dict[str, str]) -> None:
     # Measure enrichment only
     _cancel_running(SENTINEL_JOB)
     _cancel_running(DISCOVERY_JOB)
@@ -362,7 +364,7 @@ def test_f5_discovery_and_enrichment_parallel_rate(tokens: dict[str, str]) -> No
     ratio = (combined_cps / sum_alone) if sum_alone > 0 else 0.0
     status = "recovered" if ratio >= 0.85 else "recovered_with_delay"
     _write_evidence(
-        "F-5",
+        "discovery_and_enrichment_parallel_rate",
         [
             f"enrichment_execution={enrich_exec}",
             f"discovery_execution={discover_exec}",
@@ -377,4 +379,83 @@ def test_f5_discovery_and_enrichment_parallel_rate(tokens: dict[str, str]) -> No
         ],
     )
     assert enrich_cps > 0 and discover_cps > 0 and combined_cps > 0
+
+
+def _worker_ids_live(prefix: str = "sentinel-task") -> set[str]:
+    conn_name = os.environ.get("CONN")
+    dbpw = os.environ.get("DBPW")
+    if not conn_name or not dbpw:
+        pytest.skip("CONN/DBPW required for F-3 identity check")
+    connector = Connector()
+    conn = connector.connect(
+        conn_name, "pg8000", user="postgres", password=dbpw, db="collector"
+    )
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id
+            FROM procrastinate_workers
+            WHERE id LIKE %s
+              AND now() - last_heartbeat < interval '90 seconds'
+            """,
+            (f"{prefix}%",),
+        )
+        return {str(r[0]) for r in cur.fetchall()}
+    finally:
+        conn.close()
+        connector.close()
+
+
+def test_f3_worker_identity_stability(tokens: dict[str, str]) -> None:
+    """Protocol F-3: CLOUD_RUN_TASK_INDEX-derived identities survive restart.
+
+    Cloud Run Jobs has no per-task cancel API in our tooling, so we cancel the
+    whole execution (all three tasks) and re-execute with --tasks=3. Identity
+    stability is still asserted per task index (sentinel-task0/1/2).
+    Restart is performed by this test — unattended restart is F-1 / NOT IMPLEMENTED.
+    """
+    expected = {"sentinel-task0", "sentinel-task1", "sentinel-task2"}
+    _cancel_running(SENTINEL_JOB)
+    base_exec = _start(SENTINEL_JOB, 3)
+    time.sleep(15)
+    before_ids = _worker_ids_live()
+    ids = _mock_discover_ids(tokens["mock"], need=500)
+    rid, total_pages = _collect(tokens["api"], "sentinel", {"incident_ids": ids})
+    time.sleep(8)
+    cancelled = _cancel_running(SENTINEL_JOB)
+    mid = _http_json("GET", API_URL + f"/v1/requests/{rid}/counts", tokens["api"])
+    time.sleep(5)
+    during = _worker_ids_live()
+    restart_exec = _start(SENTINEL_JOB, 3)
+    deadline = time.monotonic() + 120.0
+    after_ids: set[str] = set()
+    while time.monotonic() < deadline:
+        after_ids = _worker_ids_live()
+        if expected <= after_ids:
+            break
+        time.sleep(3)
+    terminal = _wait_terminal(tokens["api"], rid, total_pages, timeout_s=3600)
+    done = int(terminal.get("counts", {}).get("done", 0))
+    _write_evidence(
+        "F-3",
+        [
+            f"base_execution={base_exec}",
+            f"restart_execution={restart_exec}",
+            f"cancelled_executions={cancelled}",
+            f"request_id={rid}",
+            f"total_pages={total_pages}",
+            f"worker_ids_before={sorted(before_ids)}",
+            f"worker_ids_during_gap={sorted(during)}",
+            f"worker_ids_after={sorted(after_ids)}",
+            f"expected_identities={sorted(expected)}",
+            f"mid_counts={mid.get('counts', {})}",
+            f"terminal_counts={terminal.get('counts', {})}",
+            "note=restart performed by this test; unattended restart unmeasured (see F-1)",
+        ],
+    )
+    assert expected <= after_ids, (
+        f"expected task-index identities {expected} after restart, got {after_ids}"
+    )
+    assert done == total_pages
 

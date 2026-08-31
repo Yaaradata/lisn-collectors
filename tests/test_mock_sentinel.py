@@ -165,7 +165,7 @@ def test_order_item_id_matches_incident_id_query(
             "Need a multi-thread incident with order_item_id — run `make seed`"
         )
     incident_id, order_item_id = row
-    order_item_id_num = float(order_item_id)
+    order_item_id_str = str(order_item_id)
 
     by_incident = client.post(
         "/v1/incidents/search",
@@ -173,7 +173,7 @@ def test_order_item_id_matches_incident_id_query(
     )
     by_order_item = client.post(
         "/v1/incidents/search",
-        json={"order_item_ids": [order_item_id_num]},
+        json={"order_item_ids": [order_item_id_str]},
     )
     assert by_incident.status_code == 200
     assert by_order_item.status_code == 200
@@ -183,7 +183,7 @@ def test_order_item_id_matches_incident_id_query(
     assert left == right
     assert len(left) > 1
     assert {row["id"] for row in left} == {incident_id}
-    assert all(float(row["orderItemId"]) == order_item_id_num for row in left)
+    assert all(row["orderItemId"] == order_item_id_str for row in left)
 
 
 def test_field_names_match_real_export(

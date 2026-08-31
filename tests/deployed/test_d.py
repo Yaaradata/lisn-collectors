@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 import urllib.request
@@ -9,6 +10,7 @@ from typing import Any
 
 import pytest
 from google.cloud import bigquery
+from google.cloud.sql.connector import Connector
 
 API_URL = "https://collector-api-mfo5qzthxa-el.a.run.app"
 MOCK_URL = "https://mock-sentinel-mfo5qzthxa-el.a.run.app"
@@ -17,7 +19,7 @@ REGION = "asia-south1"
 SENTINEL_JOB = "col-sentinel"
 DISCOVERY_JOB = "col-sentinel-discovery"
 MAINT_JOB = "col-maintenance"
-EVIDENCE_DIR = Path("/workspace/tests/deployed/evidence")
+EVIDENCE_DIR = Path(__file__).resolve().parent / "evidence"
 
 
 def _run(cmd: list[str]) -> str:
@@ -296,7 +298,7 @@ def tokens() -> dict[str, str]:
     return {"api": _token(API_URL), "mock": _token(MOCK_URL)}
 
 
-def test_d1_single_page_recovery(tokens: dict[str, str]) -> None:
+def test_single_page_happy_path(tokens: dict[str, str]) -> None:
     ids = _mock_discover_ids(tokens["mock"], need=50)
     truth = _mock_identities(tokens["mock"], ids)
     t0 = time.monotonic()
@@ -307,7 +309,7 @@ def test_d1_single_page_recovery(tokens: dict[str, str]) -> None:
     lost = observed != truth
     status = _status_label(intervention=False, lost_data=lost, elapsed_s=elapsed, delay_threshold_s=30.0)
     _write_evidence(
-        "D-1",
+        "single_page_happy_path",
         [
             f"request_id={rid}",
             f"total_pages={total_pages}",
@@ -321,7 +323,7 @@ def test_d1_single_page_recovery(tokens: dict[str, str]) -> None:
     assert not lost
 
 
-def test_d2_multi_page_recovery(tokens: dict[str, str]) -> None:
+def test_multi_page_happy_path(tokens: dict[str, str]) -> None:
     ids = _mock_discover_ids(tokens["mock"], need=500)
     truth = _mock_identities(tokens["mock"], ids)
     t0 = time.monotonic()
@@ -332,7 +334,7 @@ def test_d2_multi_page_recovery(tokens: dict[str, str]) -> None:
     lost = observed != truth
     status = _status_label(intervention=False, lost_data=lost, elapsed_s=elapsed, delay_threshold_s=60.0)
     _write_evidence(
-        "D-2",
+        "multi_page_happy_path",
         [
             f"request_id={rid}",
             f"total_pages={total_pages}",
@@ -346,7 +348,7 @@ def test_d2_multi_page_recovery(tokens: dict[str, str]) -> None:
     assert not lost
 
 
-def test_d3_bulk_recovery_with_possible_delay(tokens: dict[str, str]) -> None:
+def test_bulk_enrichment_completion(tokens: dict[str, str]) -> None:
     ids = _mock_discover_ids(tokens["mock"], need=5000)
     truth = _mock_identities(tokens["mock"], ids)
     t0 = time.monotonic()
@@ -357,7 +359,7 @@ def test_d3_bulk_recovery_with_possible_delay(tokens: dict[str, str]) -> None:
     lost = observed != truth
     status = _status_label(intervention=False, lost_data=lost, elapsed_s=elapsed, delay_threshold_s=180.0)
     _write_evidence(
-        "D-3",
+        "bulk_enrichment_completion",
         [
             f"request_id={rid}",
             f"total_pages={total_pages}",
@@ -371,7 +373,7 @@ def test_d3_bulk_recovery_with_possible_delay(tokens: dict[str, str]) -> None:
     assert not lost
 
 
-def test_d6_discovery_to_enrichment_bridge(tokens: dict[str, str]) -> None:
+def test_discovery_to_enrichment_bridge(tokens: dict[str, str]) -> None:
     t0 = time.monotonic()
     drid, dpages = _collect(
         tokens["api"],
@@ -394,7 +396,7 @@ def test_d6_discovery_to_enrichment_bridge(tokens: dict[str, str]) -> None:
     lost = len(discovered - current) > 0
     status = _status_label(intervention=False, lost_data=lost, elapsed_s=elapsed, delay_threshold_s=180.0)
     _write_evidence(
-        "D-6",
+        "discovery_to_enrichment_bridge",
         [
             f"discovery_request_id={drid}",
             f"discovery_total_pages={dpages}",
@@ -412,7 +414,7 @@ def test_d6_discovery_to_enrichment_bridge(tokens: dict[str, str]) -> None:
     assert not lost
 
 
-def test_d7_single_request_latency_while_sweeping(tokens: dict[str, str]) -> None:
+def test_single_request_latency_while_sweeping(tokens: dict[str, str]) -> None:
     ids = _mock_discover_ids(tokens["mock"], need=20000)
     sweep_rid, sweep_pages = _collect(tokens["api"], "sentinel", {"incident_ids": ids})
     probe_ids = ids[:50]
@@ -431,7 +433,7 @@ def test_d7_single_request_latency_while_sweeping(tokens: dict[str, str]) -> Non
         delay_threshold_s=120.0,
     )
     _write_evidence(
-        "D-7",
+        "single_request_latency_while_sweeping",
         [
             f"sweep_request_id={sweep_rid}",
             f"sweep_total_pages={sweep_pages}",
@@ -448,7 +450,7 @@ def test_d7_single_request_latency_while_sweeping(tokens: dict[str, str]) -> Non
     assert not lost
 
 
-def test_d8_sentinel_worker_intervention_required(tokens: dict[str, str]) -> None:
+def test_sentinel_worker_cancel_and_manual_restart(tokens: dict[str, str]) -> None:
     _cancel_running(SENTINEL_JOB)
     base_exec = _start(SENTINEL_JOB, 3)
     time.sleep(12)
@@ -466,7 +468,7 @@ def test_d8_sentinel_worker_intervention_required(tokens: dict[str, str]) -> Non
     lost = observed != truth
     status = _status_label(intervention=True, lost_data=lost, elapsed_s=elapsed, delay_threshold_s=0.0)
     _write_evidence(
-        "D-8",
+        "sentinel_worker_cancel_and_manual_restart",
         [
             f"base_execution={base_exec}",
             f"request_id={rid}",
@@ -479,12 +481,13 @@ def test_d8_sentinel_worker_intervention_required(tokens: dict[str, str]) -> Non
             f"observed_identities={len(observed)}",
             f"elapsed_s={elapsed:.3f}",
             f"scenario_status={status}",
+            "note=recovery observed only after manual restart by this test",
         ],
     )
     assert not lost
 
 
-def test_d9_discovery_worker_intervention_required(tokens: dict[str, str]) -> None:
+def test_discovery_worker_cancel_and_manual_restart(tokens: dict[str, str]) -> None:
     _cancel_running(DISCOVERY_JOB)
     base_exec = _start(DISCOVERY_JOB, 1)
     time.sleep(10)
@@ -508,7 +511,7 @@ def test_d9_discovery_worker_intervention_required(tokens: dict[str, str]) -> No
     lost = len(observed) == 0
     status = _status_label(intervention=True, lost_data=lost, elapsed_s=elapsed, delay_threshold_s=0.0)
     _write_evidence(
-        "D-9",
+        "discovery_worker_cancel_and_manual_restart",
         [
             f"base_execution={base_exec}",
             f"request_id={rid}",
@@ -520,25 +523,26 @@ def test_d9_discovery_worker_intervention_required(tokens: dict[str, str]) -> No
             f"observed_discovered_ids={len(observed)}",
             f"elapsed_s={elapsed:.3f}",
             f"scenario_status={status}",
+            "note=recovery observed only after manual restart by this test",
         ],
     )
     assert len(observed) > 0
 
 
-def test_d11_run_to_conclusion_with_30m_cap(tokens: dict[str, str]) -> None:
+def test_large_run_to_conclusion_30m_cap(tokens: dict[str, str]) -> None:
     ids = _mock_discover_ids(tokens["mock"], need=60000)
     t0 = time.monotonic()
     rid, total_pages = _collect(tokens["api"], "sentinel", {"incident_ids": ids})
     terminal = _wait_terminal(tokens["api"], rid, total_pages, timeout_s=1800)
     elapsed = time.monotonic() - t0
-    assert elapsed <= 1800.0, f"D-11 exceeded 30-minute cap: {elapsed:.3f}s"
+    assert elapsed <= 1800.0, f"large run exceeded 30-minute cap: {elapsed:.3f}s"
     sample_ids = ids[:2000]
     truth = _mock_identities(tokens["mock"], sample_ids)
     observed = _bq_identities_for_request_and_ids(rid, sample_ids)
     lost = observed != truth
     status = _status_label(intervention=False, lost_data=lost, elapsed_s=elapsed, delay_threshold_s=600.0)
     _write_evidence(
-        "D-11",
+        "large_run_to_conclusion_30m_cap",
         [
             f"request_id={rid}",
             f"total_pages={total_pages}",
@@ -553,7 +557,7 @@ def test_d11_run_to_conclusion_with_30m_cap(tokens: dict[str, str]) -> None:
     assert not lost
 
 
-def test_d12_hold_240s_sampling_15s(tokens: dict[str, str]) -> None:
+def test_hold_240s_sampling_15s(tokens: dict[str, str]) -> None:
     ids = _mock_discover_ids(tokens["mock"], need=120000)
     rid, total_pages = _collect(tokens["api"], "sentinel", {"incident_ids": ids})
     samples: list[dict[str, Any]] = []
@@ -577,7 +581,7 @@ def test_d12_hold_240s_sampling_15s(tokens: dict[str, str]) -> None:
         )
         time.sleep(15)
     total_elapsed = time.monotonic() - start
-    assert total_elapsed >= 240.0, f"D-12 hold floor violated: {total_elapsed:.3f}s"
+    assert total_elapsed >= 240.0, f"hold floor violated: {total_elapsed:.3f}s"
     terminal = _wait_terminal(tokens["api"], rid, total_pages, timeout_s=1800)
     sample_ids = ids[:2000]
     observed = _bq_identities_for_request_and_ids(rid, sample_ids)
@@ -585,7 +589,7 @@ def test_d12_hold_240s_sampling_15s(tokens: dict[str, str]) -> None:
     lost = observed != truth
     status = _status_label(intervention=False, lost_data=lost, elapsed_s=total_elapsed, delay_threshold_s=240.0)
     _write_evidence(
-        "D-12",
+        "hold_240s_sampling_15s",
         [
             f"request_id={rid}",
             f"total_pages={total_pages}",
@@ -597,9 +601,305 @@ def test_d12_hold_240s_sampling_15s(tokens: dict[str, str]) -> None:
             f"sample_truth_identities={len(truth)}",
             f"sample_observed_identities={len(observed)}",
             f"scenario_status={status}",
+            "note=no killswitch pause asserted — observation only",
         ],
     )
     assert not lost
+
+
+# ---------------------------------------------------------------------------
+# Protocol-matching scenarios (see tests/deployed/COVERAGE.md)
+# ---------------------------------------------------------------------------
+
+
+def _mock_scale_to_zero() -> None:
+    """Protocol D-6: take the mock offline by pinning max instances to 0."""
+    _run(
+        [
+            "gcloud",
+            "run",
+            "services",
+            "update",
+            "mock-sentinel",
+            f"--region={REGION}",
+            f"--project={PROJECT}",
+            "--min-instances=0",
+            "--max-instances=0",
+            "--quiet",
+        ]
+    )
+
+
+def _mock_restore_scale() -> None:
+    _run(
+        [
+            "gcloud",
+            "run",
+            "services",
+            "update",
+            "mock-sentinel",
+            f"--region={REGION}",
+            f"--project={PROJECT}",
+            "--min-instances=1",
+            "--max-instances=20",
+            "--quiet",
+        ]
+    )
+
+
+def _mock_health_ok(mock_token: str, timeout_s: float = 5.0) -> bool:
+    try:
+        body = json.dumps(None)
+        req = urllib.request.Request(
+            MOCK_URL + "/health",
+            data=None,
+            headers={"Authorization": f"Bearer {mock_token}"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _sql_connect():
+    conn_name = os.environ.get("CONN")
+    dbpw = os.environ.get("DBPW")
+    if not conn_name or not dbpw:
+        pytest.skip("CONN/DBPW required for killswitch / identity SQL checks")
+    connector = Connector()
+    conn = connector.connect(
+        conn_name, "pg8000", user="postgres", password=dbpw, db="collector"
+    )
+    return connector, conn
+
+
+def _killswitch_set(source: str, paused: bool) -> None:
+    connector, conn = _sql_connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS collector_control (
+              source text PRIMARY KEY,
+              paused boolean NOT NULL DEFAULT false,
+              updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        cur.execute(
+            """
+            INSERT INTO collector_control (source, paused, updated_at)
+            VALUES (%s, %s, now())
+            ON CONFLICT (source) DO UPDATE
+              SET paused = EXCLUDED.paused, updated_at = now()
+            """,
+            (source, paused),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+        connector.close()
+
+
+def _missing_keys_for_request(request_id: str) -> list[dict[str, Any]]:
+    connector, conn = _sql_connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT job_id::text, missing_keys
+            FROM collector_job
+            WHERE request_id = %s::uuid
+              AND missing_keys IS NOT NULL
+            """,
+            (request_id,),
+        )
+        rows = []
+        for job_id, mk in cur.fetchall():
+            payload = mk
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            rows.append({"job_id": job_id, "missing_keys": payload})
+        return rows
+    finally:
+        conn.close()
+        connector.close()
+
+
+def _mock_stats(mock_token: str) -> int:
+    return int(_http_json("GET", MOCK_URL + "/admin/stats", mock_token).get("requests", 0))
+
+
+def test_d6_source_down_60s(tokens: dict[str, str]) -> None:
+    """Protocol D-6: mock scaled to zero for 60s; pages retry and complete."""
+    _cancel_running(SENTINEL_JOB)
+    base_exec = _start(SENTINEL_JOB, 3)
+    time.sleep(12)
+    ids = _mock_discover_ids(tokens["mock"], need=200)
+    rid, total_pages = _collect(tokens["api"], "sentinel", {"incident_ids": ids})
+    time.sleep(3)
+    down_at = time.monotonic()
+    confirmed_down = False
+    try:
+        _mock_scale_to_zero()
+        # Wait until health fails (instances gone), then hold remaining time to 60s.
+        deadline = down_at + 90.0
+        while time.monotonic() < deadline:
+            if not _mock_health_ok(tokens["mock"]):
+                confirmed_down = True
+                break
+            time.sleep(2)
+        assert confirmed_down, "mock still healthy after scale-to-zero"
+        # Hold from first confirmed-down observation for a full 60s.
+        hold_start = time.monotonic()
+        while time.monotonic() - hold_start < 60.0:
+            time.sleep(5)
+            assert not _mock_health_ok(tokens["mock"]), "mock came back during hold"
+        down_held = time.monotonic() - hold_start
+    finally:
+        _mock_restore_scale()
+        # Wait for mock to accept traffic again.
+        ready_deadline = time.monotonic() + 180.0
+        while time.monotonic() < ready_deadline:
+            if _mock_health_ok(tokens["mock"], timeout_s=10.0):
+                break
+            time.sleep(5)
+        else:
+            raise AssertionError("mock did not recover health after restore")
+    assert down_held >= 60.0, f"source-down hold too short: {down_held:.3f}s"
+    terminal = _wait_terminal(tokens["api"], rid, total_pages, timeout_s=3600)
+    done = int(terminal.get("counts", {}).get("done", 0))
+    dead = int(terminal.get("counts", {}).get("dead", 0))
+    _write_evidence(
+        "D-6",
+        [
+            f"base_execution={base_exec}",
+            f"request_id={rid}",
+            f"total_pages={total_pages}",
+            f"source_down_held_s={down_held:.3f}",
+            f"confirmed_down={confirmed_down}",
+            f"terminal_counts={terminal.get('counts', {})}",
+            "method=gcloud run services update --min-instances=0 --max-instances=0",
+            f"scenario_status={'recovered_with_delay' if done == total_pages else 'needed_intervention'}",
+        ],
+    )
+    assert done == total_pages and dead == 0
+
+
+def test_d9_unrequested_records(tokens: dict[str, str]) -> None:
+    """Protocol D-9: source returns an id that was not requested; Pass 4 detects it."""
+    ids = _mock_discover_ids(tokens["mock"], need=5)
+    target = ids[0]
+    # Clear any prior payload faults, then inject unrequested_extra.
+    try:
+        _http_json("DELETE", MOCK_URL + "/admin/payload-fault", tokens["mock"])
+    except Exception:
+        pass
+    set_resp = _http_json(
+        "POST",
+        MOCK_URL + f"/admin/payload-fault/{target}/unrequested_extra",
+        tokens["mock"],
+    )
+    assert "unrequested_extra" in str(set_resp.get("payload_faults", {})), set_resp
+    try:
+        rid, total_pages = _collect(
+            tokens["api"], "sentinel", {"incident_ids": [target]}
+        )
+        terminal = _wait_terminal(tokens["api"], rid, total_pages, timeout_s=900)
+        requested = int(terminal.get("requested", 0))
+        returned = int(terminal.get("returned", 0))
+        mk_rows = _missing_keys_for_request(rid)
+        unexpected_total = sum(
+            int((r["missing_keys"] or {}).get("unexpected_total") or 0) for r in mk_rows
+        )
+        unexpected_samples = [
+            (r["missing_keys"] or {}).get("unexpected") for r in mk_rows
+        ]
+        _write_evidence(
+            "D-9",
+            [
+                f"request_id={rid}",
+                f"fault_target={target}",
+                f"terminal_counts={terminal.get('counts', {})}",
+                f"requested={requested}",
+                f"returned={returned}",
+                f"missing_field_on_counts={terminal.get('missing')}",
+                f"unexpected_total={unexpected_total}",
+                f"unexpected_samples={json.dumps(unexpected_samples)}",
+                "detection=Pass 4 shortfall_keys unexpected + counts returned>requested",
+            ],
+        )
+        assert returned > requested, (
+            f"Pass 4 comparison did not surface extras: "
+            f"requested={requested} returned={returned}"
+        )
+        assert unexpected_total >= 1, f"missing_keys had no unexpected: {mk_rows}"
+    finally:
+        _http_json("DELETE", MOCK_URL + "/admin/payload-fault", tokens["mock"])
+
+
+def test_d12_killswitch_pause_240s(tokens: dict[str, str]) -> None:
+    """Protocol D-12: pause with ≥300 pages queued; zero source calls for 240s."""
+    _cancel_running(SENTINEL_JOB)
+    base_exec = _start(SENTINEL_JOB, 3)
+    time.sleep(12)
+    # 50 ids/page → 300 pages needs 15_000 ids.
+    ids = _mock_discover_ids(tokens["mock"], need=15000)
+    rid, total_pages = _collect(tokens["api"], "sentinel", {"incident_ids": ids})
+    assert total_pages >= 300, f"need ≥300 pages queued, got {total_pages}"
+    # Let a few pages start so workers are hot, then pause.
+    time.sleep(8)
+    _killswitch_set("sentinel", True)
+    samples: list[dict[str, Any]] = []
+    try:
+        before = _mock_stats(tokens["mock"])
+        start = time.monotonic()
+        while True:
+            elapsed = time.monotonic() - start
+            if elapsed >= 240.0:
+                break
+            after = _mock_stats(tokens["mock"])
+            samples.append(
+                {
+                    "t_s": round(elapsed, 3),
+                    "mock_requests": after,
+                    "delta_from_pause_start": after - before,
+                    "request_counts": _counts(tokens["api"], rid).get("counts", {}),
+                }
+            )
+            time.sleep(15)
+        hold_elapsed = time.monotonic() - start
+        after_hold = _mock_stats(tokens["mock"])
+        calls_while_paused = after_hold - before
+    finally:
+        _killswitch_set("sentinel", False)
+
+    assert hold_elapsed >= 240.0, f"D-12 floor violated: {hold_elapsed:.3f}s"
+    # In-flight HTTP at pause instant may complete; allow a tiny slop (≤3).
+    assert calls_while_paused <= 3, (
+        f"expected ~0 source calls while paused, got {calls_while_paused}; "
+        f"samples={samples[:3]}…{samples[-1:]}"
+    )
+    terminal = _wait_terminal(tokens["api"], rid, total_pages, timeout_s=5400)
+    done = int(terminal.get("counts", {}).get("done", 0))
+    _write_evidence(
+        "D-12",
+        [
+            f"base_execution={base_exec}",
+            f"request_id={rid}",
+            f"total_pages={total_pages}",
+            f"hold_elapsed_s={hold_elapsed:.3f}",
+            f"mock_requests_at_pause={before}",
+            f"mock_requests_after_hold={after_hold}",
+            f"calls_while_paused={calls_while_paused}",
+            f"sample_count={len(samples)}",
+            f"samples_json={json.dumps(samples, separators=(',', ':'))}",
+            f"terminal_counts={terminal.get('counts', {})}",
+            f"scenario_status={'recovered' if done == total_pages else 'needed_intervention'}",
+        ],
+    )
+    assert done == total_pages
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -607,6 +907,14 @@ def _session_cleanup() -> Any:
     # Keep this section off D-4, D-5, D-10 by construction (not implemented),
     # and never call any admin delete endpoint.
     yield
+    try:
+        _killswitch_set("sentinel", False)
+    except Exception:
+        pass
+    try:
+        _mock_restore_scale()
+    except Exception:
+        pass
     _cancel_running(SENTINEL_JOB)
     _cancel_running(DISCOVERY_JOB)
     _ensure_workers_baseline()

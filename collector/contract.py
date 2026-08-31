@@ -28,6 +28,15 @@ class Record:
     data: dict
 
 
+class MalformedSourcePayload(ValueError):
+    """Source returned bytes that are not the expected JSON shape.
+
+    Distinct from transport failures (HTTP errors, timeouts) so retries and
+    operators can tell "the source answered wrongly" from "the source was
+    unreachable". Raised from parse() after the raw write, never from fetch().
+    """
+
+
 @runtime_checkable
 class SourceCollector(Protocol):
     """Per-source collector: identity, limits, and plan / fetch / parse."""

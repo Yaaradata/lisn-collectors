@@ -17,9 +17,9 @@
 - Section A: evidence present for `A-1`, `A-2`, `A-3`, `A-4`, `A-5`, `A-6`, `A-7`.
 - Section B: `B-1..B-6` measured via one-off deployed measurement scripts/artifacts (not via a committed `tests/deployed/test_b.py` suite).
 - Section C: `C-1..C-4` executed (`4 passed`).
-- Section D: executed `D-1`, `D-2`, `D-3`, `D-6`, `D-7`, `D-8`, `D-9`, `D-11`, `D-12` (`9 passed`).
-- Section E: executed `E-1..E-6`; `E-6` rerun after mock redeploy with payload-fault knobs.
-- Section F: executed `F-1`, `F-2`, `F-3`, `F-5` (`F-4` excluded).
+- Section D: descriptive / non-protocol tests renamed (see `tests/deployed/COVERAGE.md`). Protocol-matching: `D-6`, `D-9`, `D-12` implemented; `D-1`–`D-5`, `D-7`, `D-10`, `D-11` not implemented as protocol. Do **not** read renamed happy-path tests as protocol passes.
+- Section E: executed `E-1..E-6` under those names; several are IMPLEMENTED AS SOMETHING ELSE vs protocol (see COVERAGE.md).
+- Section F: descriptive tests renamed. Protocol-matching: `F-3` implemented; `F-1`, `F-2`, `F-4`, `F-5` not implemented as protocol.
 
 ## 3) Protocol Section-6 questions (verbatim) answered in order
 
@@ -49,7 +49,7 @@
 
 5. **Is it fast enough for a 30-minute cycle, and up to what population?**  
    **Answer:** sustained full-sweep measurement indicates `derived_population_ceiling_30m=193484` (< DS-2 `299190`, margin `-105706`), so not sufficient for DS-2 scale in 30 minutes.  
-   **Test/ID:** `F-3`.
+   **Test/ID:** `test_run_to_conclusion_and_30m_capacity` (formerly mislabelled F-3).
 
 6. **Does it stay inside a rate limit, and is anything enforcing one?**  
    **Answer:** measured call rates scale with task count (`C-1`: 1/2/3 tasks; `C-2`: no global ceiling observed in tested range). No test attempted to exceed a ceiling, so the supported finding is linear scaling in the tested range and no observed enforcement mechanism in that range (not proof that none exists). Runtime uses per-source intervals (`sentinel` 1.0s, `sentinel_discovery` 2.0s).  
@@ -163,21 +163,23 @@ From `docs/deployed/prior_local_findings.md`:
 
 ## 7) Protocol-to-implementation mapping accuracy (D/F)
 
-| Protocol ID | Protocol scenario (v3) | Implemented test | What implemented test actually does | Corresponds to protocol? |
-|---|---|---|---|---|
-| D-1 | Cancel one sentinel task mid-fetch; measure recovery/duplication | `test_d1_single_page_recovery` | Single-page happy-path recovery check | No |
-| D-2 | Cancel all three sentinel tasks mid-sweep; auto-recovery | `test_d2_multi_page_recovery` | Multi-page happy-path completion | No |
-| D-3 | 24-hour task-ceiling stop; measure stop duration | `test_d3_bulk_recovery_with_possible_delay` | Bulk enrichment completion with delay classification | No |
-| D-6 | Source down (mock scaled to zero for 60s) | `test_d6_discovery_to_enrichment_bridge` | Discovery→enrichment bridge balance check | No |
-| D-7 | Source slow (20s/call) against lease | `test_d7_single_request_latency_while_sweeping` | Probe latency while backlog sweep is active | No |
-| D-8 | Source garbage payload modes | `test_d8_sentinel_worker_intervention_required` | Cancel sentinel workers and restart mid-run | No |
-| D-9 | Source returns unrequested records | `test_d9_discovery_worker_intervention_required` | Cancel discovery worker and restart mid-run | No |
-| D-11 | Permanent page failure; time-to-dead-letter | `test_d11_run_to_conclusion_with_30m_cap` | Large run to completion under 30-minute cap | No |
-| D-12 | Killswitch pause 240s under load; zero source calls while paused | `test_d12_hold_240s_sampling_15s` | 240s observation under load without killswitch pause/resume assertions | No |
-| F-1 | Workers restart after termination / scheduler behavior | `test_f1_throughput_floor_60s` | 60-second throughput floor measurement | No |
-| F-2 | Is periodic sweep isolated to maintenance queue | `test_f2_single_page_latency_during_backlog` | Single-page latency during backlog | No |
-| F-3 | `CLOUD_RUN_TASK_INDEX` identity stability across restarts | `test_f3_run_to_conclusion_and_30m_capacity` | Full-sweep throughput/capacity measurement | No |
-| F-5 | Ten consecutive cycles drift/health growth | `test_f5_discovery_and_enrichment_parallel_rate` | Rate independence of discovery+enrichment concurrency | No |
+**Canonical map:** `tests/deployed/COVERAGE.md`. The table below is retained for the historical false-ID incident; names in the "Was falsely named" column no longer exist.
+
+| Protocol ID | Protocol scenario (v3) | Status | Actual test (if any) |
+|---|---|---|---|
+| D-1 | Cancel one sentinel task mid-fetch | NOT IMPLEMENTED | was `test_d1_*` → now `test_single_page_happy_path` |
+| D-2 | Cancel all three tasks; auto-recovery | NOT IMPLEMENTED | → `test_multi_page_happy_path` |
+| D-3 | 24h task-ceiling stop | NOT IMPLEMENTED | → `test_bulk_enrichment_completion` |
+| D-6 | Source down 60s | IMPLEMENTED | `test_d6_source_down_60s` |
+| D-7 | Source slow against lease | NOT IMPLEMENTED | → `test_single_request_latency_while_sweeping` |
+| D-8 | Source garbage payloads | IMPLEMENTED AS SOMETHING ELSE | closest `test_e6_payload_fault_modes` |
+| D-9 | Unrequested records | IMPLEMENTED | `test_d9_unrequested_records` |
+| D-11 | Permanent page failure / dead-letter timing | NOT IMPLEMENTED | → `test_large_run_to_conclusion_30m_cap` |
+| D-12 | Killswitch pause 240s | IMPLEMENTED | `test_d12_killswitch_pause_240s` |
+| F-1 | Unattended worker restart / scheduler | NOT IMPLEMENTED | → `test_throughput_floor_60s`; waits on Pass 12 |
+| F-2 | Sweep isolated to maintenance | NOT IMPLEMENTED | → `test_single_page_latency_during_backlog` |
+| F-3 | `CLOUD_RUN_TASK_INDEX` identity stability | IMPLEMENTED | `test_f3_worker_identity_stability` |
+| F-5 | Ten consecutive cycles | NOT IMPLEMENTED | → `test_discovery_and_enrichment_parallel_rate` |
 
 ## 8) Measurement reconciliation notes
 

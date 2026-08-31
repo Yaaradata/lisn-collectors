@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,31 @@ def _iso(value: Any) -> Any:
     return value
 
 
+def _id_string(value: Any) -> str | None:
+    """Serialize an identifier for the wire. Never float() — above 2^53 it rounds.
+
+    NULL stays None (not 0 / "0"). A prior `or 0` path turned genuine NULLs into
+    zeros; that is a second bug and must not return.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise TypeError(f"identifier must not be bool, got {value!r}")
+    if isinstance(value, str):
+        return value  # preserve leading zeros; do not renumber
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, Decimal):
+        # Exact decimal → digit string; never via float.
+        normalized = format(value, "f")
+        if "." in normalized:
+            normalized = normalized.rstrip("0").rstrip(".")
+        return normalized
+    raise TypeError(
+        f"identifier must be str/int/Decimal/None, got {type(value).__name__}"
+    )
+
+
 def _row_to_export(row: dict[str, Any]) -> dict[str, Any]:
     """Re-dot snake_case DB columns to real Sentinel export field names."""
     return {
@@ -67,8 +93,10 @@ def _row_to_export(row: dict[str, Any]) -> dict[str, Any]:
         "issue.parentResponse.id": row["issue_parent_id"],
         "issue.parentResponse.name": row["issue_parent_name"],
         "orderId": row["order_id"],
-        "orderItemId": row["order_item_id"],
-        "orderItemUnitId": row["order_item_unit_id"],
+        # Identifiers — STRING on the wire. float() here is what turned
+        # 9007199254740993 into 9007199254740992 before BigQuery ever saw it.
+        "orderItemId": _id_string(row["order_item_id"]),
+        "orderItemUnitId": _id_string(row["order_item_unit_id"]),
         "trackingId": row["tracking_id"],
         "orderItemProductFSN": row["order_item_product_fsn"],
         "incidentScore": row["incident_score"],
@@ -88,7 +116,7 @@ def _row_to_export(row: dict[str, Any]) -> dict[str, Any]:
         "threads.id": row["thread_id"],
         "threads.channel.id": row["channel_id"],
         "threads.channel.name": row["channel_name"],
-        "threads.communicationId": row["communication_id"],
+        "threads.communicationId": _id_string(row["communication_id"]),
         "threads.contentType": row["content_type"],
         "threads.createdAt": _iso(row["thread_created_at"]),
         "threads.createdBy": row["created_by"],
@@ -158,7 +186,7 @@ ORDER BY i.id, t.created_at NULLS LAST
 
 class SearchRequest(BaseModel):
     incident_ids: list[str] = Field(default_factory=list)
-    # JSON may send ints, floats, or digit-strings; converted to numeric below.
+    # Prefer digit-strings; ints accepted and stringified. JSON floats rejected.
     order_item_ids: list[Any] = Field(default_factory=list)
     order_ids: list[str] = Field(default_factory=list)
 
@@ -181,32 +209,42 @@ _VALID_PAYLOAD_FAULT_MODES = {
     "html_error_page",
     "empty_body_200",
     "incidents_string",
+    # Append one fabricated incident id that was never in the request body.
+    # Used by protocol D-9 (Pass 4 requested/returned / unexpected-key check).
+    "unrequested_extra",
 }
 
+# Stable id never present in a real page payload — Pass 4 must flag it.
+_UNREQUESTED_EXTRA_ID = "IN_UNREQUESTED_EXTRA_0001"
 
-def _as_order_item_id(value: Any) -> float:
-    # order_item_id is numeric in sentinel_incident (see sql/002_sentinel_mock.sql).
-    # Convert JSON body values explicitly rather than relying on implicit casting
-    # in PostgreSQL / psycopg — callers may send int, float, or string.
+
+def _as_order_item_id(value: Any) -> str:
+    # Identifiers are strings (see sql/002_sentinel_mock.sql). Never float() —
+    # JSON numbers above 2^53 are already rounded by the client; digit-strings
+    # and ints must stay exact for the lookup key.
     if isinstance(value, bool):
         raise HTTPException(
             status_code=400,
-            detail=f"order_item_id must be numeric, got bool {value!r}",
+            detail=f"order_item_id must be a digit string or int, got bool {value!r}",
         )
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=f"order_item_id must be numeric, got {value!r}",
-            ) from exc
-    raise HTTPException(
-        status_code=400,
-        detail=f"order_item_id must be numeric, got {type(value).__name__}",
-    )
+    if isinstance(value, float):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "order_item_id must not be a JSON number/float — send a string "
+                f"(float loses precision above 2^53); got {value!r}"
+            ),
+        )
+    try:
+        out = _id_string(value)
+    except TypeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if out is None or out == "":
+        raise HTTPException(
+            status_code=400,
+            detail=f"order_item_id must be a non-empty identifier, got {value!r}",
+        )
+    return out
 
 
 def _ensure_aware(value: datetime) -> datetime:
@@ -315,7 +353,7 @@ def search_incidents(body: SearchRequest, request: Request) -> dict[str, Any]:
     _REQUESTS += 1
 
     incident_ids = list(body.incident_ids or [])
-    # Explicit numeric conversion — see _as_order_item_id.
+    # String identifiers — see _as_order_item_id (never float).
     order_item_ids = [_as_order_item_id(v) for v in (body.order_item_ids or [])]
     order_ids = list(body.order_ids or [])
 
@@ -380,8 +418,8 @@ def search_incidents(body: SearchRequest, request: Request) -> dict[str, Any]:
                     "by_incident": bool(incident_ids),
                     "incident_ids": incident_ids or [""],
                     "by_order_item": bool(order_item_ids),
-                    # Placeholder when unused: numeric ANY needs a typed empty-safe value.
-                    "order_item_ids": order_item_ids or [-1.0],
+                    # Placeholder when unused: text ANY needs a typed empty-safe value.
+                    "order_item_ids": order_item_ids or [""],
                     "by_order": bool(order_ids),
                     "order_ids": order_ids or [""],
                 },
@@ -389,6 +427,26 @@ def search_incidents(body: SearchRequest, request: Request) -> dict[str, Any]:
             rows = cur.fetchall()
 
     incidents = [_row_to_export(row) for row in rows]
+    if mode == "unrequested_extra":
+        # Clone shape from a real row when possible; otherwise a minimal stub.
+        base = dict(incidents[0]) if incidents else {
+            "id": _UNREQUESTED_EXTRA_ID,
+            "issue.id": "0",
+            "issue.name": "unrequested",
+            "orderId": "OD-UNREQUESTED",
+            "orderItemId": "0",
+            "orderItemUnitId": "0",
+            "trackingId": "TRK-UNREQUESTED",
+            "status.status": "Open",
+            "status.statusType": "Open",
+            "agingScore": 0,
+            "threads.id": "TH-UNREQUESTED",
+            "threads.threadEntryType.name": "Customer",
+            "threads.channel.name": "Chat",
+        }
+        base["id"] = _UNREQUESTED_EXTRA_ID
+        base["threads.id"] = "TH-UNREQUESTED"
+        incidents = list(incidents) + [base]
     return {"incidents": incidents, "count": len(incidents)}
 
 
@@ -519,6 +577,7 @@ def seed_acceptance_probes(request: Request) -> dict[str, Any]:
         ("IN270827PRECISION01", 9007199254740991),
         ("IN270827PRECISION02", 9007199254740993),
         ("IN270827PRECISION03", 1234567890123456789),
+        ("IN270827PRECISION04", "0123456789012345678"),  # leading zero
     ]
     null_thread_id = "IN270827NULLTHREAD0001"
 
@@ -528,6 +587,15 @@ def seed_acceptance_probes(request: Request) -> dict[str, Any]:
             for idx, (incident_id, order_item_id) in enumerate(precision_rows, start=1):
                 cur.execute("DELETE FROM sentinel_thread WHERE incident_id = %s", (incident_id,))
                 cur.execute("DELETE FROM sentinel_incident WHERE id = %s", (incident_id,))
+                oid = str(order_item_id)
+                # Sibling unit/communication ids stay digit-strings derived without float.
+                if isinstance(order_item_id, str) and order_item_id.startswith("0"):
+                    unit_id = order_item_id + "U"
+                    comm_id = order_item_id + "C"
+                else:
+                    n = int(order_item_id)
+                    unit_id = str(n + 1000)
+                    comm_id = str(n + 2000)
                 cur.execute(
                     """
                     INSERT INTO sentinel_incident (
@@ -543,8 +611,8 @@ def seed_acceptance_probes(request: Request) -> dict[str, Any]:
                     (
                         incident_id,
                         f"ODPREC{idx:06d}",
-                        str(order_item_id),
-                        str(order_item_id + 1000),
+                        oid,
+                        unit_id,
                         f"FSNPREC{idx:06d}",
                         now,
                         now,
@@ -565,7 +633,7 @@ def seed_acceptance_probes(request: Request) -> dict[str, Any]:
                     (
                         f"THPREC{idx:06d}",
                         incident_id,
-                        str(order_item_id + 2000),
+                        comm_id,
                         now,
                         now,
                     ),
