@@ -1,6 +1,6 @@
-enrichment_alone_calls_per_second=2.233330
+enrichment_alone_calls_per_second=2.099997
 discovery_alone_calls_per_second=0.166666
-concurrent_calls_per_second=2.383329
-sum_of_alone_calls_per_second=2.399996
-concurrent_over_sum_ratio=0.993055
+concurrent_calls_per_second=2.299996
+sum_of_alone_calls_per_second=2.266663
+concurrent_over_sum_ratio=1.014706
 independent_rates_hold=True
