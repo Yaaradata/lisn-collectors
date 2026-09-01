@@ -227,7 +227,7 @@ def _bq_identities_for_request(request_id: str) -> set[tuple[str, str | None]]:
     client = _bq_client()
     sql = f"""
     SELECT id, threads_id
-    FROM `{PROJECT}.sentinel_raw.incidents`
+    FROM `{PROJECT}.sentinel_raw.incidents_v2`
     WHERE _request_id = @rid
     """
     job = client.query(
@@ -287,7 +287,7 @@ def _bq_row_key_count_for_request(request_id: str) -> int:
     client = _bq_client()
     sql = f"""
     SELECT TO_JSON_STRING(t) AS row_json
-    FROM `{PROJECT}.sentinel_raw.incidents` AS t
+    FROM `{PROJECT}.sentinel_raw.incidents_v2` AS t
     WHERE _request_id = @rid
     LIMIT 1
     """
@@ -528,13 +528,13 @@ def test_a7_order_item_ids_retrieval(tokens: dict[str, str]) -> None:
     ids = _mock_discover_all_ids(
         tokens["mock"], updated_from="2026-08-20T00:00:00Z", updated_to="2026-08-27T00:00:00Z", limit=1000, max_pages=5
     )
-    order_item_id: int | None = None
+    order_item_id: str | None = None
     for i in range(0, len(ids), 50):
         payload = _mock_search(tokens["mock"], incident_ids=ids[i : i + 50])
         for inc in payload.get("incidents", []):
             val = inc.get("orderItemId")
             if val is not None:
-                order_item_id = int(float(val))
+                order_item_id = str(val)
                 break
         if order_item_id is not None:
             break

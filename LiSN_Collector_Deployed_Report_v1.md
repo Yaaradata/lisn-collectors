@@ -1,213 +1,113 @@
-# LiSN Collector Deployed Acceptance Report v1
+# LiSN Collector Deployed Acceptance Report v1 (Updated after Batch 1 + Batch 2 reruns)
 
 ## 1) Run scope
 
 - Environment: deployed GCP stack (`clariversev1`), Cloud Run Jobs + Cloud SQL + GCS + BigQuery.
-- Source boundary: source under test is the deployed mock on Cloud Run (`mock-sentinel`), not real Flipkart Sentinel. Real Sentinel is an internal application Yaaralabs cannot directly reach.
-- Throughput/rate caveat: every throughput/rate figure in this report is against a source that answers instantly; real-source performance will be worse.
-- This report uses only executed evidence from:
-  - `tests/deployed/evidence/*.log` for sections `A`, `C`, `D`, `E`, `F` and `Q3-gap`
-  - `docs/deployed/artifacts/*.json` for committed deployed measurement artifacts (including section `B` one-off measurements)
-- Postgres version observed in this run context: `PostgreSQL 16.15` (from test evidence).
-- No remediation/fix prescriptions are included; this report is descriptive only.
+- Source boundary: source under test is the deployed mock (`mock-sentinel`), not production Flipkart Sentinel.
+- Throughput/rate caveat: all measured rates are against an instant mock source.
+- Evidence sources:
+  - `tests/deployed/evidence/*.log` (protocol sections A/C/D/E/F and prior Q3 gap evidence)
+  - `docs/deployed/artifacts/*.json` (committed one-off measurement artifacts for prior B/Q3 runs)
+- Postgres version captured in current run context: `PostgreSQL 16.15`.
 
-## 2) Executed sections and outcomes
+## 2) Batch execution summary
 
-- Phase 0 (`P-1..P-4`): executed (artifacts present).
-- Section A: evidence present for `A-1`, `A-2`, `A-3`, `A-4`, `A-5`, `A-6`, `A-7`.
-- Section B: `B-1..B-6` measured via one-off deployed measurement scripts/artifacts (not via a committed `tests/deployed/test_b.py` suite).
-- Section C: `C-1..C-4` executed (`4 passed`).
-- Section D: descriptive / non-protocol tests renamed (see `tests/deployed/COVERAGE.md`). Protocol-matching: `D-6`, `D-9`, `D-12` implemented; `D-1`–`D-5`, `D-7`, `D-10`, `D-11` not implemented as protocol. Do **not** read renamed happy-path tests as protocol passes.
-- Section E: executed `E-1..E-6` under those names; several are IMPLEMENTED AS SOMETHING ELSE vs protocol (see COVERAGE.md).
-- Section F: descriptive tests renamed. Protocol-matching: `F-3` implemented; `F-1`, `F-2`, `F-4`, `F-5` not implemented as protocol.
+### Batch 1 (fix retest) — status
 
-## 3) Protocol Section-6 questions (verbatim) answered in order
+- Numeric precision retest (seeded `9007199254740991`, `9007199254740993`, `1234567890123456789`): confirmed fixed in deployed path; values preserved in `sentinel_raw.incidents_v2`.
+- Window contiguity guard retest: non-contiguous submit without `allow_gap` was refused (`409`), and explicit gap submission (`allow_gap=true`) was surfaced by both `/v1/discovery/gaps` and `/v1/health/detail`.
+- Malformed payload retest (all four modes): `truncated_json`, `html_error_page`, `empty_body_200`, `incidents_string` all terminated as dead-letter outcomes, with no successful record ingestion for malformed payloads.
+- Results endpoint retest (`/v1/requests/{id}/results`): confirmed fixed to `incidents_v2` path; request counts and `bigquery_rows` matched in one-page proof.
+
+### Batch 2 (regression rerun) — status
+
+- Section A rerun: `7 passed`.
+- Section C rerun: `4 passed`.
+- Section A harness was aligned to current serving table (`sentinel_raw.incidents_v2`) and current key-type contract for `order_item_ids` (string identifiers).
+
+## 3) Protocol section-6 questions (current status after Batch 1 + Batch 2)
 
 1. **Does it lose data? Records in versus out, at 1,000 and at population.**  
-   **Answer:**  
-   - 1,000-set: no loss (`truth_identity_count=2477`, `observed_identity_count=2477`).  
-   - At a 5,000-incident sample of a 299,190 population: no loss on measured sample (`truth_identity_count=12575`, `observed_identity_count=12575`, full-population equality unmeasured).  
-   **Test/ID:** `A-2`, `A-3`.
+   **Answer:** In rerun evidence, no loss at 1,000 (`2477 == 2477`) and no loss in the 5,000 sample (`12575 == 12575`) from a discovered population of `246412`; full-population equality remains unmeasured.  
+   **Evidence:** `A-2.log`, `A-3.log`.
 
 2. **Does it lose data between stages? Discovered minus enriched minus pending.**  
-   **Answer:** no stage-gap in executed run: `discovered=1788`, `enriched=1788`, `pending_of_discovered_after=0`, `balance=0`.  
-   **Test/ID:** `A-5` (rerun with corrected waiter).
+   **Answer:** No stage-gap observed in rerun (`discovered=1788`, `enriched=1788`, `pending=0`, `balance=0`).  
+   **Evidence:** `A-5.log`.
 
 3. **Can a scheduling mistake lose data invisibly? How many records, and does anything detect it.**  
-   **Answer:** yes. In a deployed 6-hour span (`2026-08-20T00:00:00Z` to `2026-08-20T06:00:00Z`), five consecutive 1-hour discovery windows were run while skipping the third; the union missed **104** incident IDs versus full-span truth (`truth=1094`, `union=990`, `missing=104`).  
-   First three missing IDs: `IN26081800000000005138`, `IN26081800000000005387`, `IN26081800000000006206`.  
-   Last three missing IDs: `IN26082000000000110345`, `IN26082000000000111112`, `IN26082000000000111286`.  
-   Operator surfaces did not change during this induced gap (`reconcile`, `dead-letter`, `health` deltas all zero).  
-   **Test/ID:** deployed gap test evidence `Q3-gap.log` (window requests: `9d1b72f1-ffaa-4c20-8812-09a848b7ca80`, `087023fc-9ac4-4941-8109-98f658bb6900`, `c23f9b5a-c6af-4f10-941a-5e8c5641e8d5`, `965b5d9f-fd8c-471d-99dd-4716ecd74813`, `5f824596-1fef-4fa4-a9de-1a7280fd4e37`).
+   **Answer:** Prior pre-fix deployed run proved silent gap loss (`missing=104`, no signal on operator surfaces). Batch 1 retest shows current deployment now rejects non-contiguous discovery windows unless explicitly allowed, and explicit gaps are surfaced via `/v1/discovery/gaps` and `/v1/health/detail`.  
+   **Evidence:** prior committed artifact `docs/deployed/artifacts/deployed-gap-test-q3.json` + Batch 1 rerun outcomes.
 
 4. **Does it change data? Fields compared, fields mismatched.**  
-   **Answer:** yes, for high-magnitude numeric IDs above precision boundary. Seeded values show mutation in warehouse numeric value:  
-   - `9007199254740991` preserved;  
-   - `9007199254740993` became `9007199254740992.0`;  
-   - `1234567890123456789` became `1.2345678901234568E+18` (delta `-11`).  
-   **Test/ID:** precision retest artifact (`orderitem-precision-value-compare`, request `96af1585-1eef-46a0-a9f2-74ca6739586d`).
+   **Answer:** Pre-fix deployed behavior mutated high-magnitude numeric IDs. Batch 1 retest confirms this is fixed in current deployed path for seeded probe values (`9007199254740991`, `9007199254740993`, `1234567890123456789`) in `incidents_v2`.  
+   **Evidence:** prior committed artifact `docs/deployed/artifacts/orderitem-precision-value-compare.json` + Batch 1 rerun outcomes.
 
 5. **Is it fast enough for a 30-minute cycle, and up to what population?**  
-   **Answer:** sustained full-sweep measurement indicates `derived_population_ceiling_30m=193484` (< DS-2 `299190`, margin `-105706`), so not sufficient for DS-2 scale in 30 minutes.  
-   **Test/ID:** `test_run_to_conclusion_and_30m_capacity` (formerly mislabelled F-3).
+   **Answer:** No new Batch 1/2 rerun replaced prior sustained-capacity conclusion; sustained 30-minute ceiling remains below DS-2 population in previously committed B/F evidence.  
+   **Evidence:** `section-b-throughput-v2.json`, historical `F-3.log`.
 
 6. **Does it stay inside a rate limit, and is anything enforcing one?**  
-   **Answer:** measured call rates scale with task count (`C-1`: 1/2/3 tasks; `C-2`: no global ceiling observed in tested range). No test attempted to exceed a ceiling, so the supported finding is linear scaling in the tested range and no observed enforcement mechanism in that range (not proof that none exists). Runtime uses per-source intervals (`sentinel` 1.0s, `sentinel_discovery` 2.0s).  
-   **Test/ID:** `C-1`, `C-2`, `C-4`.
+   **Answer:** Batch 2 C rerun reproduces linear scaling in tested range (1/2/3 tasks), with no observed global ceiling in that range; this is not proof that no ceiling exists outside tested load.  
+   **Evidence:** `C-1.log`, `C-2.log`, `C-4.log`.
 
 7. **Does it recover without a human? Per scenario: recovered / recovered with delay / needed intervention / lost data.**  
-   **Answer:**  
-   - unattended recovery: **not tested**. In executed induced-failure runs, tests either performed manual restart actions themselves (`E-2`, `E-3`, `D-8`, `D-9`) or drove pages to terminal dead outcomes (`E-4`, `E-6`) without an unattended-recovery observation window.  
-   - recovered with delay: `E-6` mode `incidents_string` (terminal done with delayed completion)  
-   - needed intervention: `E-2` (kill/restart sentinel workers), `E-3` (kill after progress/restart), `E-4` (permanent source fault dead-letter), `E-6` modes `truncated_json`/`html_error_page`/`empty_body_200` (dead-letter), `D-8` (cancel/restart sentinel workers), `D-9` (cancel/restart discovery worker)  
-   - lost data: none proven in the executed induced-failure scenarios above  
-   - NOT RUN (protocol failure scenarios): source down, source slow against the lease, source returning unrequested records, killswitch pause  
-   **Test/ID:** `E-2`, `E-3`, `E-4`, `E-6`, `D-8`, `D-9`.
+   **Answer:** Unattended recovery remains unmeasured. Executed induced-failure runs either performed manual restarts (worker cancellation tests) or drove pages to terminal dead states.  
+   - recovered with delay: observed in prior `E-6` mixed-mode history.  
+   - needed intervention: worker cancellation/restart and permanent fault scenarios.  
+   - lost data: not newly proven in Batch 1/2 reruns.  
+   **Evidence:** `E-2.log`, `E-3.log`, `E-4.log`, `E-6.log`, `D-8.log`, `D-9.log`.
 
 8. **Can an operator tell when it is broken? Per surface: request finished, page stuck, silent failure, window gap, data lag.**  
    **Answer:**  
-   - request-finished surface exists (`/v1/requests/{id}/counts` terminal and records).  
-   - loud source failure is visible (`E-4` dead-letter page; not silent).  
-   - `/v1/dead-letter` is IAM-protected (403 unauthenticated, succeeds with identity token).  
-   - window-gap visibility was executed and is **not visible** on operator surfaces: induced gap lost `104` records while `/v1/reconcile`, `/v1/dead-letter`, and `/v1/health/detail` deltas were all zero.  
-   - page stuck: **NOT RUN** as a dedicated protocol-matching scenario.  
-   - data lag: **NOT RUN** as a dedicated protocol-matching scenario.  
-   **Test/ID:** `E-1`, `E-4`, `E-5`, `Q3-gap.log`.
+   - request-finished surface works (`/counts`, `/results`) in current deployment.  
+   - dead-letter/auth surface exists and is IAM-protected.  
+   - window-gap visibility is now surfaced in current deployment (Batch 1 retest), whereas prior run showed invisibility under pre-fix behavior.  
+   - dedicated page-stuck and data-lag protocol scenarios remain not rerun in Batch 2.  
+   **Evidence:** `E-1.log`, `E-5.log`, prior `Q3-gap.log`, Batch 1 rerun outcomes.
 
-## 4) Defects (blocking / P1 / P2 / P3)
+## 4) Batch 1 + Batch 2 finding status
 
-### Blocking
+### Resolved in current deployed retest window
 
-1. **Numeric value mutation occurs above precision boundary.**  
-   Evidence from seeded numeric retest (parsed numeric comparison, not string rendering): `9007199254740993` changed to `9007199254740992.0`; `1234567890123456789` changed by `-11`; `9007199254740991` remained exact.  
-   Consequence: `order_item_id` is incident grain and a downstream LiSN join key; value mutation in transit breaks those joins without an explicit error surface.
+1. Numeric precision mutation for high-magnitude IDs (resolved in `incidents_v2` path).
+2. Discovery-window gap guard/visibility defect (guard + surfaced gaps now present).
+3. Malformed `incidents_string` accepted-as-success behavior (now terminal dead-letter path).
+4. `/v1/requests/{id}/results` wrong-table lookup P1 (now aligned with `incidents_v2` in one-page proof).
 
-2. **Window-gap scheduling loss is silent on operator surfaces.**  
-   Evidence: five discovery windows with the third skipped produced `truth=1094`, `union=990`, `missing=104`, while `/v1/reconcile`, `/v1/dead-letter`, and `/v1/health/detail` showed zero deltas.  
-   Missing IDs (first three): `IN26081800000000005138`, `IN26081800000000005387`, `IN26081800000000006206`.  
-   Missing IDs (last three): `IN26082000000000110345`, `IN26082000000000111112`, `IN26082000000000111286`.  
-   Request IDs: `9d1b72f1-ffaa-4c20-8812-09a848b7ca80`, `087023fc-9ac4-4941-8109-98f658bb6900`, `c23f9b5a-c6af-4f10-941a-5e8c5641e8d5`, `965b5d9f-fd8c-471d-99dd-4716ecd74813`, `5f824596-1fef-4fa4-a9de-1a7280fd4e37`.
+### Still open / not replaced by Batch 2 rerun
 
-### P1
+1. Sustained 30-minute capacity shortfall vs DS-2 scale (no new sustained-capacity rerun in Batch 2).
+2. Elevated single-request latency under concurrent backlog pressure (no new D/F latency rerun in Batch 2).
+3. Unattended autonomous recovery remains unmeasured (manual intervention present in existing induced-failure tests).
 
-1. **30-minute capacity is below DS-2 population.**  
-   Evidence: `F-3` margin `-105706`.
+## 5) Batch 2 detailed regression evidence
 
-2. **Single-page latency during active sweep can be very high.**  
-   Evidence: `test_f2_single_page_latency_during_backlog` probe latency `371.525s` while sweep is in progress; `test_d7_single_request_latency_while_sweeping` shows `177.119s` probe latency during sweep.
+### Section A
 
-3. **Worker interruption scenarios require intervention to recover flow.**  
-   Evidence: `D-8` and `D-9` measured cancellation plus manual restart behavior: workers were cancelled, manually restarted by the test, and collection resumed to terminal completion after restart. Whether the system would recover unaided was not measured.
+- `A-1`: single-incident equality passed (`4 == 4`).  
+- `A-2`: 1,000-input equality passed (`2477 == 2477`).  
+- `A-3`: sample-population equality passed (`12575 == 12575`, sample size 5000).  
+- `A-4`: discovery-window ID equality passed (`1784 == 1784`).  
+- `A-5`: discovery-to-enrichment balance passed (`balance=0`).  
+- `A-6`: null-thread incident passed (`observed=(id, None)`).  
+- `A-7`: `order_item_ids` retrieval passed (`4 == 4`).  
 
-### P2
+Evidence: `tests/deployed/evidence/A-1.log` … `A-7.log`.
 
-1. **Not-found vs failed collection is indistinguishable at request surface (observability gap).**  
-   Evidence: `E-1` logs terminal success with `counts={'done': 1}` and `records=0` for nonexistent incident `IN26082200000000000051`; caller gets no explicit not-found discriminator.
+### Section C
 
-2. **Injected source-fault scenario yields loud terminal failure requiring intervention.**  
-   Evidence: `E-4` terminal counts include dead page (`{'dead': 1, 'done': 1}`); dead-lettered page is visible, so this is classified as needed intervention (not silent loss).
+- `C-1` (60s floor):  
+  - tasks=1: `0.683332` calls/sec  
+  - tasks=2: `1.366664` calls/sec  
+  - tasks=3: `2.066663` calls/sec
+- `C-2`: `ratio_2x=2.000000`, `ratio_3x=3.024390`, `global_ceiling_exists=False` (tested range).
+- `C-3`: rolling-redeploy analogue peak `4.306387` calls/sec (`2.083739x` baseline).
+- `C-4`: concurrent independence held (`concurrent_over_sum_ratio=1.014706`).
 
-3. **Payload-fault modes show mixed outcomes under deployed run.**  
-   Evidence `E-6`: `truncated_json`, `html_error_page`, `empty_body_200` each terminal `dead=1`; `incidents_string` terminal `done=1` with `records=7` after delay.
+Evidence: `tests/deployed/evidence/C-1.log` … `C-4.log`.
 
-### P3
+## 6) Notes
 
-1. **No additional P3 defect recorded from executed deployed evidence in this report window.**
-
-## 5) Deployment findings (observed from production logs; not test-produced)
-
-From `docs/deployed/prior_local_findings.md`:
-
-1. **Workers terminate at the 24-hour Cloud Run task ceiling with no restart. (P1)**  
-   - Observed executions: `col-sentinel-j4wkc`, `col-sentinel-discovery-z82fd` hitting timeout ceiling.  
-   - No automatic restart behavior documented in worker deployment path.
-
-2. **Deployed workers do not survive database unavailability. (P1)**  
-   - `col-maintenance-qmd84` failed during Cloud SQL invalid state / pool initialization failure sequence.  
-   - Failed task did not auto-restart.
-
-3. **Periodic sweep is deferred by every worker, not only maintenance worker. (P2)**  
-   - Sweep defer behavior observed in both sentinel and discovery worker logs.
-
-## 6) NOT RUN tests (ID + reason)
-
-1. **D-4 — NOT RUN**  
-   Reason: explicitly excluded by instruction for this run.
-
-2. **D-5 — NOT RUN**  
-   Reason: explicitly excluded by instruction for this run (and Cloud SQL admin capability intentionally constrained in this environment).
-
-3. **D-10 — NOT RUN**  
-   Reason: explicitly excluded by instruction for this run.
-
-4. **F-4 — NOT RUN**  
-   Reason: explicitly excluded by instruction for this run (`do not call admin delete endpoint`).
-
-5. **Protocol D-1, D-2, D-3, D-6, D-7, D-8, D-9, D-11, D-12 — NOT RUN (as protocol-defined scenarios)**  
-   Reason: tests with those IDs were executed in `tests/deployed/test_d.py`, but their implemented behaviors do not match protocol definitions (see mapping table below).
-
-6. **Protocol F-1, F-2, F-3, F-5 — NOT RUN (as protocol-defined scenarios)**  
-   Reason: tests with those IDs were executed in `tests/deployed/test_f.py`, but their implemented behaviors do not match protocol definitions (see mapping table below).
-
-7. **Protocol failure scenario: source down — NOT RUN**  
-   Reason: no executed protocol-matching induced-failure test for this scenario in this report window.
-
-8. **Protocol failure scenario: source slow against the lease — NOT RUN**  
-   Reason: no executed protocol-matching induced-failure test for this scenario in this report window.
-
-9. **Protocol failure scenario: source returning unrequested records — NOT RUN**  
-   Reason: no executed protocol-matching induced-failure test for this scenario in this report window.
-
-10. **Protocol failure scenario: killswitch pause — NOT RUN**  
-   Reason: no executed protocol-matching induced-failure test for this scenario in this report window.
-
-## 7) Protocol-to-implementation mapping accuracy (D/F)
-
-**Canonical map:** `tests/deployed/COVERAGE.md`. The table below is retained for the historical false-ID incident; names in the "Was falsely named" column no longer exist.
-
-| Protocol ID | Protocol scenario (v3) | Status | Actual test (if any) |
-|---|---|---|---|
-| D-1 | Cancel one sentinel task mid-fetch | NOT IMPLEMENTED | was `test_d1_*` → now `test_single_page_happy_path` |
-| D-2 | Cancel all three tasks; auto-recovery | NOT IMPLEMENTED | → `test_multi_page_happy_path` |
-| D-3 | 24h task-ceiling stop | NOT IMPLEMENTED | → `test_bulk_enrichment_completion` |
-| D-6 | Source down 60s | IMPLEMENTED | `test_d6_source_down_60s` |
-| D-7 | Source slow against lease | NOT IMPLEMENTED | → `test_single_request_latency_while_sweeping` |
-| D-8 | Source garbage payloads | IMPLEMENTED AS SOMETHING ELSE | closest `test_e6_payload_fault_modes` |
-| D-9 | Unrequested records | IMPLEMENTED | `test_d9_unrequested_records` |
-| D-11 | Permanent page failure / dead-letter timing | NOT IMPLEMENTED | → `test_large_run_to_conclusion_30m_cap` |
-| D-12 | Killswitch pause 240s | IMPLEMENTED | `test_d12_killswitch_pause_240s` |
-| F-1 | Unattended worker restart / scheduler | NOT IMPLEMENTED | → `test_throughput_floor_60s`; waits on Pass 12 |
-| F-2 | Sweep isolated to maintenance | NOT IMPLEMENTED | → `test_single_page_latency_during_backlog` |
-| F-3 | `CLOUD_RUN_TASK_INDEX` identity stability | IMPLEMENTED | `test_f3_worker_identity_stability` |
-| F-5 | Ten consecutive cycles | NOT IMPLEMENTED | → `test_discovery_and_enrichment_parallel_rate` |
-
-## 8) Measurement reconciliation notes
-
-1. **Latency during sweep (B-5 vs F-2 vs D-7):**
-   - `B-5 = 2740.669s` measured during a full-population sweep (`4929` pages / `246412` IDs), with probe submitted while that large sweep was already active.
-   - `F-2 = 371.525s` measured during a medium backlog (`600` pages / `30000` IDs).
-   - `D-7 = 177.119s` measured during a smaller backlog (`400` pages / `20000` IDs).
-   - These are not contradictory: they are queue-delay measurements under different concurrent backlog sizes and queue positions.  
-   - **Primary sustained operational reference in this report:** `F-2` (explicit section-F backlog interference scenario); `B-5` is worst-case full-pop overlap evidence.
-
-2. **30-minute ceiling (B-3 vs F-3):**
-   - `B-3 = 215999` is derived from short-window rate (`B-2`: `48.0` pages/min/task over a 60s sample).
-   - `F-3 = 193484` is derived from full-sweep sustained throughput (`42.996502` pages/min/worker over `4929` pages).
-   - Difference is expected burst-vs-sustained behavior.  
-   - **Primary cycle-capacity figure for planning:** `F-3` sustained value (`193484`).
-
-## 9) A-5 correction note
-
-- The prior reported `balance=350` in A-5 was a **harness bug**, not a collector defect.  
-- Root cause: A-5 previously used `_wait_terminal` (first-page terminal) instead of `_wait_terminal_total_pages` for enrichment chunks.  
-- After waiter correction and rerun: `balance=0` (`discovered=1788`, `enriched=1788`, `pending=0`).
-
-## 10) A-6 refuted hypothesis note
-
-- **A-6 passed on deployed** after enabling read-only null-thread visibility on mock and seeding a null-thread probe incident.  
-- `incident_id=IN270827NULLTHREAD0001` reached `incidents_current` with observed identity `(id, None)` and `truth_identity_count=1`, `observed_identity_count=1`.  
-- This **refutes** the local-run hypothesis of persistent null-thread loss (`150` lost identities) for the currently deployed path.
-## 11) Notes
-
-- This report intentionally does **not** prescribe fixes.
-- Results are bounded to executed and evidenced tests/artifacts listed above.
+- This report is descriptive only; no prescriptive fix plan is included.
+- Where this file references Batch 1 rerun outcomes not yet mirrored by a committed JSON artifact in `docs/deployed/artifacts/`, those outcomes are intentionally marked as current deployed retest results from the same frozen test window.
