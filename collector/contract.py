@@ -20,6 +20,10 @@ class Page:
 class RawResponse:
     body: bytes
     content_type: str
+    # Optional HTTP metadata for source_fetch span attributes (host only, never
+    # a full URL that could embed keys).
+    http_status_code: int | None = None
+    url_host: str | None = None
 
 
 @dataclass(frozen=True)

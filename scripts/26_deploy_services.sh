@@ -137,6 +137,13 @@ service_ingress() {
 }
 
 # ---------------------------------------------------------------------------
+# STEP 0 — SigNoz ingestion secret (never an env literal / .env / git)
+# ---------------------------------------------------------------------------
+ok "STEP 0 — ensure signoz-ingestion-key + grant accessors"
+ensure_signoz_secret
+grant_signoz_secret_accessors
+
+# ---------------------------------------------------------------------------
 # STEP 1 — Build and push
 # ---------------------------------------------------------------------------
 ok "STEP 1 — Build and push ${IMG}"
@@ -144,17 +151,7 @@ ok "STEP 1 — Build and push ${IMG}"
 # supplied per deployment. The mock, the API and the workers all run this image.
 gcloud builds submit --tag "$IMG" --project="$PROJECT"
 
-DIGEST="$(
-  gcloud artifacts docker images describe "$IMG" \
-    --project="$PROJECT" \
-    --format='value(image_summary.digest)' 2>/dev/null || true
-)"
-if [[ -z "$DIGEST" ]]; then
-  DIGEST="$(
-    gcloud builds list --project="$PROJECT" --limit=1 \
-      --format='value(results.images[0].digest)' 2>/dev/null || true
-  )"
-fi
+DIGEST="$(image_digest)"
 ok "Pushed ${IMG}"
 echo "digest=${DIGEST:-<unknown>}"
 
@@ -164,6 +161,8 @@ echo "digest=${DIGEST:-<unknown>}"
 ok "STEP 2 — Deploy ${MOCK_SERVICE}"
 # Auth required: do NOT pass --allow-unauthenticated. Callers need run.invoker
 # plus an ID token (see scripts/24_grant_invoker.sh for the worker SA).
+# Mock is instrumented deliberately — its latency is the denominator for every
+# throughput figure; same-trace visibility separates our time from the source's.
 gcloud run deploy "$MOCK_SERVICE" \
   --project="$PROJECT" \
   --region="$REGION" \
@@ -173,7 +172,8 @@ gcloud run deploy "$MOCK_SERVICE" \
   --ingress=all \
   --min-instances=1 \
   --port=8080 \
-  --set-secrets="SENTINEL_MOCK_DSN=sentinel-mock-dsn:latest" \
+  --set-env-vars="$(otel_env_vars lisn-mock-sentinel "$DIGEST"),COLLECTOR_SOURCE=mock" \
+  --set-secrets="SENTINEL_MOCK_DSN=sentinel-mock-dsn:latest,SIGNOZ_INGESTION_KEY=signoz-ingestion-key:latest" \
   --command=uvicorn \
   --args="mock.sentinel_api:app,--host,0.0.0.0,--port,8080" \
   --quiet
@@ -210,8 +210,8 @@ gcloud run deploy "$API_SERVICE" \
   --add-cloudsql-instances="$CONN" \
   --min-instances=1 \
   --port=8080 \
-  --set-env-vars="SENTINEL_URL=${SENTINEL_URL},RAW_BUCKET=${BUCKET},PROJECT=${PROJECT},GOOGLE_CLOUD_PROJECT=${PROJECT},REGION=${REGION},ALLOW_ADMIN_RESET=${ALLOW_ADMIN_RESET:-1},USE_ID_TOKEN=1" \
-  --set-secrets="COLLECTOR_DSN=collector-dsn:latest" \
+  --set-env-vars="SENTINEL_URL=${SENTINEL_URL},RAW_BUCKET=${BUCKET},PROJECT=${PROJECT},GOOGLE_CLOUD_PROJECT=${PROJECT},REGION=${REGION},ALLOW_ADMIN_RESET=${ALLOW_ADMIN_RESET:-1},USE_ID_TOKEN=1,$(otel_env_vars lisn-collector-api "$DIGEST")" \
+  --set-secrets="COLLECTOR_DSN=collector-dsn:latest,SIGNOZ_INGESTION_KEY=signoz-ingestion-key:latest" \
   --command=uvicorn \
   --args="collector.api:api,--host,0.0.0.0,--port,8080" \
   --quiet

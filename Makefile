@@ -124,10 +124,12 @@ worker:
 
 # Maintenance queue only — runs the periodic sweep and sweep_now. Does not
 # pull sentinel fetch_page jobs (those stay on `make worker`).
+# ENABLE_PERIODIC=1: this process alone scrapes global OTel gauges (workers.live
+# etc). Enrichment workers must NOT set it — triple-counted gauges break alerts.
 # Procrastinate 3.9 requires --delete-jobs values in LOWERCASE (never,
 # successful, always).
 sweeper:
-	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; export PYTHONPATH=.; export PROCRASTINATE_APP=collector.app.app; if [[ -x .venv/Scripts/python.exe ]]; then PY=.venv/Scripts/python.exe; elif [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python3; fi; "$$PY" -m procrastinate worker -q maintenance -c 1 --delete-jobs never'
+	@bash -lc 'set -euo pipefail; set -a; source .env; set +a; export PYTHONPATH=.; export PROCRASTINATE_APP=collector.app.app; export COLLECTOR_SOURCE=$${COLLECTOR_SOURCE:-maintenance}; export ENABLE_PERIODIC=1; if [[ -x .venv/Scripts/python.exe ]]; then PY=.venv/Scripts/python.exe; elif [[ -x .venv/bin/python ]]; then PY=.venv/bin/python; else PY=python3; fi; "$$PY" -m procrastinate worker -q maintenance -c 1 --delete-jobs never'
 
 # Waiting two minutes for the cron tick in front of an audience is bad demo pacing.
 # Invokes the sweep body directly (does not wait for a worker / cron tick).

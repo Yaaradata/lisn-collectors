@@ -17,6 +17,12 @@ import uuid
 from datetime import datetime
 from typing import Any, Self
 
+# OTel before any other collector import so instrumentors patch libraries
+# (FastAPI / httpx / psycopg) before those modules are pulled in and used.
+from collector.telemetry import init_telemetry
+
+init_telemetry()
+
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,13 +55,20 @@ from collector.discovery_gaps import (
     insert_discovery_windows,
     list_gaps,
 )
+from collector.logging_setup import get_logger, log
+from collector.metrics import record_request_pages, record_request_received
 from collector.redact import redact_secrets
 from collector.shortfall import requested_count as page_requested_count
 from collector.sources import get
 from collector.tasks import fetch_page
+from collector.tracing import (
+    inject_trace_context,
+    key_type_and_count,
+    traced_span,
+)
 
 api = FastAPI(title="LiSN Collectors Request API")
-log = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Demo frontend (make frontend → :3000) calls this API on :8080. Tokens still
 # must not live in the browser — use gcloud run services proxy for Cloud Run.
@@ -306,6 +319,20 @@ def collect(body: CollectBody) -> dict[str, Any]:
                             ),
                         },
                     )
+                log(
+                    logger,
+                    logging.CRITICAL,
+                    "DISCOVERY GAP DETECTED — accepting with allow_gap",
+                    source=body.source,
+                    status="discovery_gap",
+                    duration_ms=int(
+                        (
+                            check.gap_duration
+                            or (check.gap_to - check.gap_from)
+                        ).total_seconds()
+                        * 1000
+                    ),
+                )
             if check.overlap_with_to is not None:
                 # Overlap is not a gap — re-collection is safe and sometimes
                 # deliberate. Surface as a warning; do not reject.
@@ -314,108 +341,160 @@ def collect(body: CollectBody) -> dict[str, Any]:
                     f"window_to={check.overlap_with_to.isoformat()} "
                     "(overlap; not rejected)"
                 )
-
-    try:
-        src = get(body.source)
-        pages = src.plan(query_spec)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400, detail=redact_secrets(str(exc))
-        ) from exc
-
-    # Flood guard: priority > 5 with a large page fan-out recreates the
-    # backlog problem with extra steps. The fast lane only works while it
-    # stays short (~20 pages / 1,000 keys at batch_cap=50).
-    if body.priority > 5 and len(pages) > 20:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"priority {body.priority} rejected for {len(pages)} pages — "
-                "the fast lane is for small urgent requests "
-                "(priority > 5 requires ≤ 20 pages / ~1000 keys)"
-            ),
-        )
-
-    # plan() runs HERE, once, at request time. It is never called again.
-    # Recovery re-reads the stored page_payload rather than recomputing, so a
-    # changed underlying dataset can never shift the page boundaries mid-request.
-
-    request_id = uuid.uuid4()
-    job_ids: list[uuid.UUID] = []
-
-    # Rows are written BEFORE jobs are deferred. If the process dies between the
-    # two, the sweeper finds orphan rows — the safe direction. Deferring first
-    # would queue jobs pointing at rows that do not exist.
-    with connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO collector_request (
-                  request_id, source, query_spec, total_pages, status
+                log(
+                    logger,
+                    logging.WARNING,
+                    "discovery window overlaps the previous one",
+                    source=body.source,
+                    status="overlap",
                 )
-                VALUES (%s, %s, %s::jsonb, %s, 'open')
-                """,
-                (
-                    request_id,
-                    body.source,
-                    json.dumps(query_spec),
-                    len(pages),
+
+    key_type, key_count = key_type_and_count(query_spec, body.source)
+    with traced_span(
+        "collect_request",
+        attributes={
+            "source": body.source,
+            "key_type": key_type,
+            "key_count": key_count,
+            "priority": body.priority,
+            "lisn.source": body.source,
+            "lisn.key_type": key_type,
+            "lisn.key_count": key_count,
+            "lisn.priority": body.priority,
+        },
+    ) as root_span:
+        try:
+            with traced_span("plan_pages"):
+                src = get(body.source)
+                pages = src.plan(query_spec)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=redact_secrets(str(exc))
+            ) from exc
+
+        root_span.set_attribute("page_count", len(pages))
+        root_span.set_attribute("lisn.page_count", len(pages))
+
+        # Flood guard: priority > 5 with a large page fan-out recreates the
+        # backlog problem with extra steps. The fast lane only works while it
+        # stays short (~20 pages / 1,000 keys at batch_cap=50).
+        if body.priority > 5 and len(pages) > 20:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"priority {body.priority} rejected for {len(pages)} pages — "
+                    "the fast lane is for small urgent requests "
+                    "(priority > 5 requires ≤ 20 pages / ~1000 keys)"
                 ),
             )
-            for page in pages:
-                job_id = uuid.uuid4()
-                job_ids.append(job_id)
-                cur.execute(
-                    """
-                    INSERT INTO collector_job (
-                      job_id, request_id, source, page_no, page_payload,
-                      status, requested_count, priority
+
+        # plan() runs HERE, once, at request time. It is never called again.
+        # Recovery re-reads the stored page_payload rather than recomputing, so a
+        # changed underlying dataset can never shift the page boundaries mid-request.
+
+        request_id = uuid.uuid4()
+        job_ids: list[uuid.UUID] = []
+
+        # Capture W3C context WHILE collect_request is current. Workers extract
+        # this later — Postgres is the only hop between API and worker.
+        trace_carrier = inject_trace_context()
+
+        # Rows are written BEFORE jobs are deferred. If the process dies between the
+        # two, the sweeper finds orphan rows — the safe direction. Deferring first
+        # would queue jobs pointing at rows that do not exist.
+        with traced_span(
+            "write_job_rows",
+            attributes={"lisn.page_count": len(pages)},
+        ):
+            with connect() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO collector_request (
+                          request_id, source, query_spec, total_pages, status
+                        )
+                        VALUES (%s, %s, %s::jsonb, %s, 'open')
+                        """,
+                        (
+                            request_id,
+                            body.source,
+                            json.dumps(query_spec),
+                            len(pages),
+                        ),
                     )
-                    VALUES (%s, %s, %s, %s, %s::jsonb, 'pending', %s, %s)
-                    """,
-                    (
-                        job_id,
-                        request_id,
-                        body.source,
-                        page.page_no,
-                        json.dumps(page.payload),
-                        page_requested_count(page.payload),
-                        body.priority,
-                    ),
-                )
-        conn.commit()
+                    for page in pages:
+                        job_id = uuid.uuid4()
+                        job_ids.append(job_id)
+                        cur.execute(
+                            """
+                            INSERT INTO collector_job (
+                              job_id, request_id, source, page_no, page_payload,
+                              status, requested_count, priority, trace_context
+                            )
+                            VALUES (
+                              %s, %s, %s, %s, %s::jsonb, 'pending', %s, %s, %s
+                            )
+                            """,
+                            (
+                                job_id,
+                                request_id,
+                                body.source,
+                                page.page_no,
+                                json.dumps(page.payload),
+                                page_requested_count(page.payload),
+                                body.priority,
+                                trace_carrier,
+                            ),
+                        )
+                conn.commit()
 
-    if body.source == "sentinel_discovery":
-        insert_discovery_windows(
-            request_id=request_id,
+        if body.source == "sentinel_discovery":
+            insert_discovery_windows(
+                request_id=request_id,
+                source=body.source,
+                query_spec=query_spec,
+                allow_gap=body.allow_gap,
+                gap_reason=body.gap_reason,
+            )
+
+        with traced_span(
+            "defer_jobs",
+            attributes={"lisn.page_count": len(job_ids)},
+        ):
+            with procrastinate_app.open():
+                for job_id in job_ids:
+                    # Queue name == source name (contract). Discovery and enrichment
+                    # workers listen on different queues; defer must match.
+                    # priority → procrastinate_jobs.priority (ORDER BY priority DESC).
+                    fetch_page.configure(
+                        queue=body.source, priority=body.priority
+                    ).defer(job_id=str(job_id))
+
+        total_keys = sum(_page_key_count(page.payload) for page in pages)
+        out: dict[str, Any] = {
+            "request_id": str(request_id),
+            "total_pages": len(pages),
+            "keys": total_keys,
+            "priority": body.priority,
+        }
+        if overlap_warnings:
+            out["warnings"] = overlap_warnings
+        if body.allow_gap and body.source == "sentinel_discovery":
+            out["allow_gap"] = True
+            out["gap_reason"] = body.gap_reason
+        log(
+            logger,
+            logging.INFO,
+            "request accepted",
+            request_id=str(request_id),
             source=body.source,
-            query_spec=query_spec,
-            allow_gap=body.allow_gap,
-            gap_reason=body.gap_reason,
+            status="accepted",
+            record_count=len(pages),
+            requested_count=total_keys,
         )
-
-    with procrastinate_app.open():
-        for job_id in job_ids:
-            # Queue name == source name (contract). Discovery and enrichment
-            # workers listen on different queues; defer must match.
-            # priority → procrastinate_jobs.priority (ORDER BY priority DESC).
-            fetch_page.configure(
-                queue=body.source, priority=body.priority
-            ).defer(job_id=str(job_id))
-
-    total_keys = sum(_page_key_count(page.payload) for page in pages)
-    out: dict[str, Any] = {
-        "request_id": str(request_id),
-        "total_pages": len(pages),
-        "keys": total_keys,
-        "priority": body.priority,
-    }
-    if overlap_warnings:
-        out["warnings"] = overlap_warnings
-    if body.allow_gap and body.source == "sentinel_discovery":
-        out["allow_gap"] = True
-        out["gap_reason"] = body.gap_reason
-    return out
+        record_request_received(source=body.source, key_type=key_type)
+        record_request_pages(source=body.source, page_count=len(pages))
+        return out
 
 
 @api.get("/v1/requests/{request_id}/counts")
@@ -547,7 +626,9 @@ def request_results(request_id: str) -> dict[str, Any]:
     bq_table: str | None = None
     if project:
         if source == "sentinel":
-            bq_table = f"{project}.sentinel_raw.incidents"
+            # Must match SentinelSource.bq_table — loads land in incidents_v2
+            # (STRING ids); the legacy FLOAT64 incidents table is not serving.
+            bq_table = f"{project}.sentinel_raw.incidents_v2"
             id_col = "id"
         elif source == "sentinel_discovery":
             bq_table = f"{project}.sentinel_raw.discovered_ids"
@@ -720,6 +801,26 @@ def reconcile(minutes: int = Query(default=15, ge=0)) -> dict[str, Any]:
                 (minutes,),
             )
             rows = [_row_dict(columns, row) for row in cur.fetchall()]
+    if rows:
+        log(
+            logger,
+            logging.CRITICAL,
+            "reconcile found raw-without-load rows",
+            status="reconcile_unloaded",
+            record_count=len(rows),
+        )
+        for row in rows[:20]:
+            log(
+                logger,
+                logging.CRITICAL,
+                "reconcile unloaded row",
+                request_id=str(row.get("request_id")),
+                job_id=str(row.get("job_id")),
+                source=row.get("source"),
+                page_no=row.get("page_no"),
+                attempt=row.get("attempts"),
+                status="reconcile_unloaded",
+            )
     return {"unloaded": len(rows), "rows": rows}
 
 
@@ -773,6 +874,15 @@ def discovery_gaps(
     ),
 ) -> dict[str, Any]:
     gaps = list_gaps(source=source, range_from=range_from, range_to=range_to)
+    if gaps:
+        log(
+            logger,
+            logging.CRITICAL,
+            "DISCOVERY GAP DETECTED",
+            source=source or "all",
+            status="discovery_gap",
+            record_count=len(gaps),
+        )
     return {
         "gaps": gaps,
         "count": len(gaps),
@@ -993,7 +1103,7 @@ def admin_state() -> dict[str, Any]:
     "/v1/admin/sample-ids",
     summary="Sample incident IDs from BigQuery landing table",
     description=(
-        "Returns distinct incident ids from sentinel_raw.incidents for the "
+        "Returns distinct incident ids from sentinel_raw.incidents_v2 for the "
         "demo UI 'Load sample IDs' button. Same Cloud Run auth as the rest of "
         "the API — not a public shortcut."
     ),
@@ -1012,7 +1122,7 @@ def admin_sample_ids(
     if not project:
         raise HTTPException(status_code=500, detail="PROJECT unset")
     region = os.environ.get("REGION", "asia-south1")
-    table = f"`{project}.sentinel_raw.incidents`"
+    table = f"`{project}.sentinel_raw.incidents_v2`"
     client = bigquery.Client(project=project, location=region)
     try:
         rows = list(
@@ -1046,7 +1156,7 @@ def admin_sample_ids(
             "ids": [],
             "count": 0,
             "message": (
-                "sentinel_raw.incidents is empty — run a collection or use "
+                "sentinel_raw.incidents_v2 is empty — run a collection or use "
                 "the date mode first"
             ),
         }

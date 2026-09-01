@@ -2,22 +2,13 @@ import logging
 import os
 import sys
 
-import procrastinate
-from procrastinate import utils
-from procrastinate.psycopg_connector import PsycopgConnector
-
-from collector.db import (
-    DB_CONNECT_TIMEOUT_S,
-    dsn_for_log,
-    pool_kwargs,
-    wait_for_db,
-)
-
 # Identity is derived from the source plus a STABLE Cloud Run value, never from
 # a hostname or a UUID. With jobs, CLOUD_RUN_TASK_INDEX is deterministic across
 # executions, so a restarted task 0 has the same identity as the task 0 that
 # died. That is what lets Procrastinate's own recovery find its stranded jobs at
 # startup instead of relying entirely on the sweeper.
+# Computed before telemetry / other collector imports so resource attributes
+# and WORKER_ID agree without a circular import.
 task_index = os.environ.get("CLOUD_RUN_TASK_INDEX")  # jobs
 instance = os.environ.get("CLOUD_RUN_WORKER_POOL_REVISION")  # pools, if set
 source = os.environ.get("COLLECTOR_SOURCE", "local")
@@ -29,25 +20,37 @@ elif instance:
 else:
     WORKER_ID = f"{source}-local"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s:%(name)s:%(message)s",
-)
-logger = logging.getLogger("collector.app")
+# OTel before any other collector import so instrumentors patch libraries
+# before db/procrastinate pull them in.
+from collector.telemetry import init_telemetry
 
-# Diagnosable from logs alone on a failed task — password redacted via Pass 1.
+init_telemetry()
+
+import procrastinate
+from procrastinate import utils
+from procrastinate.psycopg_connector import PsycopgConnector
+
+from collector.db import (
+    DB_CONNECT_TIMEOUT_S,
+    pool_kwargs,
+    wait_for_db,
+)
+from collector.logging_setup import get_logger, log
+
+logger = get_logger("collector.app")
+
 _DSN = os.environ["COLLECTOR_DSN"]
-logger.warning(
-    "collector starting worker_id=%s dsn=%s DB_CONNECT_TIMEOUT_S=%.0f "
-    "(pool getconn timeout raised 30s→%.0f; reconnect_timeout kept/set %.0f; "
-    "open(wait) timeout raised 30s→%.0f; check_connection already enabled "
-    "by Procrastinate)",
-    WORKER_ID,
-    dsn_for_log(_DSN),
-    DB_CONNECT_TIMEOUT_S,
-    DB_CONNECT_TIMEOUT_S,
-    DB_CONNECT_TIMEOUT_S,
-    DB_CONNECT_TIMEOUT_S,
+
+# One INFO line at process start — not three. Structured fields carry identity
+# and the connect budget; Cloud Logging / SigNoz filter on worker_id + source.
+log(
+    logger,
+    logging.INFO,
+    "worker starting",
+    worker_id=WORKER_ID,
+    source=source,
+    status="starting",
+    duration_ms=int(DB_CONNECT_TIMEOUT_S * 1000),
 )
 
 

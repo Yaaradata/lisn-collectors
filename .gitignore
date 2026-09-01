@@ -81,6 +81,8 @@ ehthumbs.db
 logs/
 tmp/
 temp/
+.tmp_*
+.tmp_iam/
 data/
 !data/.gitkeep
 

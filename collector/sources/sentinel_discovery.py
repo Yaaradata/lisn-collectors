@@ -27,6 +27,8 @@ from typing import Any
 
 from collector.contract import MalformedSourcePayload, Page, RawResponse, Record
 from collector.http import get_client
+from collector.metrics import record_source_call, record_source_latency
+from collector.tracing import traced_span, url_host
 
 MAX_WINDOW = timedelta(days=15)
 # Hard cap on cursor-followed discovery pages inside one fetch() job.
@@ -144,33 +146,87 @@ class SentinelDiscoveryCollector:
         # Return bytes that land in GCS unmodified (our evidence of what the
         # source returned). Envelope wraps one-or-more discover responses so
         # parse() can see partial / cursor_pages_fetched after the internal loop.
+        #
+        # One child span PER CURSOR PAGE — not per incident id. Row-level spans
+        # at discovery volume would drown SigNoz; the sequential walk cost is
+        # what we need visible against parallel enrichment fan-out.
         base = os.environ["SENTINEL_URL"].rstrip("/")
         url = f"{base}/v1/incidents/discover"
+        host = url_host(url)
 
         filter_body = dict(page.payload)
         pages_out: list[dict[str, Any]] = []
         cursor: str | None = None
         partial = False
+        last_status = 0
 
-        with get_client(base) as client:
-            for i in range(CURSOR_PAGE_CAP):
-                if i > 0:
-                    time.sleep(self.min_interval_s)
-                body = dict(filter_body)
-                if cursor is not None:
-                    body["cursor"] = cursor
-                response = client.post(url, json=body, timeout=60.0)
-                response.raise_for_status()
-                doc = response.json()
-                pages_out.append(doc)
-                if not doc.get("has_more"):
-                    break
-                cursor = doc.get("next_cursor")
-                if not cursor:
-                    break
-            else:
-                # Exhausted CURSOR_PAGE_CAP while has_more was still true.
-                partial = True
+        with traced_span(
+            "source_fetch",
+            attributes={"source.url_host": host},
+        ) as fetch_span:
+            with get_client(base) as client:
+                for i in range(CURSOR_PAGE_CAP):
+                    if i > 0:
+                        time.sleep(self.min_interval_s)
+                    body = dict(filter_body)
+                    if cursor is not None:
+                        body["cursor"] = cursor
+                    with traced_span(
+                        "discovery_cursor_page",
+                        attributes={
+                            "discovery.cursor_page_index": i,
+                            "source.url_host": host,
+                        },
+                    ) as cursor_span:
+                        t0 = time.perf_counter()
+                        try:
+                            response = client.post(url, json=body, timeout=60.0)
+                            record_source_call(
+                                source=self.name,
+                                http_status=response.status_code,
+                            )
+                            record_source_latency(
+                                source=self.name,
+                                duration_ms=(time.perf_counter() - t0) * 1000.0,
+                            )
+                        except Exception:
+                            record_source_call(
+                                source=self.name, http_status=0
+                            )
+                            record_source_latency(
+                                source=self.name,
+                                duration_ms=(time.perf_counter() - t0) * 1000.0,
+                            )
+                            raise
+                        last_status = response.status_code
+                        cursor_span.set_attribute(
+                            "http.status_code", response.status_code
+                        )
+                        cursor_span.set_attribute(
+                            "http.response_content_length", len(response.content)
+                        )
+                        response.raise_for_status()
+                        doc = response.json()
+                        pages_out.append(doc)
+                        ids = doc.get("incident_ids") if isinstance(doc, dict) else None
+                        if isinstance(ids, list):
+                            cursor_span.set_attribute(
+                                "discovery.ids_in_page", len(ids)
+                            )
+                    if not doc.get("has_more"):
+                        break
+                    cursor = doc.get("next_cursor")
+                    if not cursor:
+                        break
+                else:
+                    # Exhausted CURSOR_PAGE_CAP while has_more was still true.
+                    partial = True
+
+            fetch_span.set_attribute("http.status_code", last_status)
+            fetch_span.set_attribute(
+                "discovery.cursor_pages_fetched", len(pages_out)
+            )
+            fetch_span.set_attribute("discovery.partial", partial)
 
         envelope = {
             "pages": pages_out,
@@ -180,7 +236,12 @@ class SentinelDiscoveryCollector:
             "filter": filter_body,
         }
         raw = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
-        return RawResponse(body=raw, content_type="application/json")
+        return RawResponse(
+            body=raw,
+            content_type="application/json",
+            http_status_code=last_status or None,
+            url_host=host,
+        )
 
     def parse(self, raw: RawResponse, page: Page) -> list[Record]:
         # Shape checks belong HERE, not in fetch(). fetch() returns (or builds)

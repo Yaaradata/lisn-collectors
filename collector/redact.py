@@ -6,6 +6,7 @@ persisted field). Read-time scrubbing would leave them in the database.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import overload
 
@@ -32,6 +33,12 @@ _API_KEY = re.compile(
     re.IGNORECASE,
 )
 
+# SigNoz ingestion key header / bare env leakage
+_SIGNOZ_HEADER = re.compile(
+    r"(signoz-ingestion-key\s*[=:]\s*)\S+",
+    re.IGNORECASE,
+)
+
 
 @overload
 def redact_secrets(text: None) -> None: ...
@@ -42,7 +49,7 @@ def redact_secrets(text: str) -> str: ...
 
 
 def redact_secrets(text: str | None) -> str | None:
-    """Return *text* with DSN passwords, bearer tokens, and API keys scrubbed.
+    """Return *text* with DSN passwords, bearer tokens, API keys, SigNoz key scrubbed.
 
     Safe on ``None`` and on text with no match — returns the input unchanged
     (same object for ``None`` / no-match ``str``).
@@ -53,4 +60,9 @@ def redact_secrets(text: str | None) -> str | None:
     out = _KV_PASSWORD.sub(r"\1***", out)
     out = _BEARER.sub(r"\1***", out)
     out = _API_KEY.sub(r"\1***", out)
+    out = _SIGNOZ_HEADER.sub(r"\1***", out)
+    # If the live ingestion key appears as a bare substring, scrub it.
+    key = os.environ.get("SIGNOZ_INGESTION_KEY", "").strip()
+    if key and key in out:
+        out = out.replace(key, "***")
     return out

@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS collector_job (
   -- Queue order hint for Procrastinate (higher runs first). Default 0.
   -- Affects QUEUE ORDER only — not rate limits, not in-flight preemption.
   priority          integer NOT NULL DEFAULT 0,
+  -- W3C Trace Context carrier (JSON). API injects under collect_request;
+  -- workers extract so fetch_page is a child span across process boundaries.
+  trace_context     text,
   last_error        text,
   created_at        timestamptz NOT NULL DEFAULT now(),
   updated_at        timestamptz NOT NULL DEFAULT now(),

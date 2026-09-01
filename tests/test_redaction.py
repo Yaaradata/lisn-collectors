@@ -37,9 +37,14 @@ def test_bearer_token_redacted() -> None:
     assert "Authorization: Bearer ***" in out
 
 
-def test_plain_text_unchanged() -> None:
+def test_api_key_style_unchanged_when_no_match() -> None:
     raw = "injected poison for dead-letter test"
     assert redact_secrets(raw) == raw
+
+
+def test_signoz_header_pattern() -> None:
+    out = redact_secrets("signoz-ingestion-key=deadbeefcafebabe")
+    assert out == "signoz-ingestion-key=***"
 
 
 def test_none_returns_none() -> None:

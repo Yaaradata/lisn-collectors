@@ -24,6 +24,12 @@ from psycopg_pool import ConnectionPool
 
 from mock.reference import MAX_IDS_PER_CALL
 
+# OTel before app construction so FastAPIInstrumentor patches the framework
+# the mock runs on. Same image as the collector; service name comes from env.
+from collector.telemetry import init_telemetry, shutdown_telemetry
+
+init_telemetry()
+
 # In-memory fault set for Sprint 4 retry demos. In-memory on purpose so a
 # process restart clears injected faults.
 _FAULTS: set[str] = set()
@@ -332,6 +338,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         pool.close()
+        # Flush OTel buffers on mock shutdown (Cloud Run SIGTERM → lifespan).
+        shutdown_telemetry()
 
 
 app = FastAPI(title="Mock Sentinel Export", lifespan=lifespan)

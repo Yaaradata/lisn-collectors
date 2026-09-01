@@ -15,9 +15,10 @@ from typing import Any
 
 import psycopg
 
+from collector.logging_setup import get_logger, log
 from collector.redact import redact_secrets
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Cloud SQL maintenance restarts commonly take 1–3 minutes. The previous
 # implicit ceiling was psycopg_pool's open(wait=True) default of 30s — below
@@ -51,8 +52,9 @@ def wait_for_db(
 ) -> None:
     """Block until a single connection succeeds, or exit after *budget_s*.
 
-    Logs every failed attempt at WARNING with elapsed time. On exhaustion,
-    logs a clear error and exits non-zero — never hangs forever.
+    First-try success is silent at INFO (DEBUG only). Failures log one WARNING
+    per attempt with the redacted error. On recovery after retries, one WARNING
+    "database reachable after backoff". On exhaustion, one CRITICAL then exit.
     """
     conninfo = dsn if dsn is not None else os.environ["COLLECTOR_DSN"]
     budget = DB_CONNECT_TIMEOUT_S if budget_s is None else float(budget_s)
@@ -72,25 +74,38 @@ def wait_for_db(
                 connect_timeout=_ATTEMPT_CONNECT_TIMEOUT_S,
             ) as conn:
                 conn.execute("SELECT 1")
-            logger.warning(
-                "database reachable after %.1fs (%d attempt(s)) dsn=%s",
-                time.monotonic() - started,
-                attempt,
-                dsn_for_log(conninfo),
-            )
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            if attempt > 1:
+                log(
+                    logger,
+                    logging.WARNING,
+                    "database reachable after backoff",
+                    attempt=attempt,
+                    duration_ms=elapsed_ms,
+                    status="connected",
+                )
+            else:
+                log(
+                    logger,
+                    logging.DEBUG,
+                    "database connected",
+                    attempt=attempt,
+                    duration_ms=elapsed_ms,
+                    status="connected",
+                )
             return
         except Exception as exc:  # noqa: BLE001 — any connect failure retries
             last_exc = exc
             elapsed = time.monotonic() - started
             remaining = budget - elapsed
-            logger.warning(
-                "database connect attempt %d failed after %.1fs "
-                "(budget=%.0fs remaining=%.1fs): %s",
-                attempt,
-                elapsed,
-                budget,
-                max(0.0, remaining),
-                redact_secrets(str(exc)),
+            log(
+                logger,
+                logging.WARNING,
+                "database connect attempt failed",
+                attempt=attempt,
+                duration_ms=int(elapsed * 1000),
+                status="retry",
+                error=redact_secrets(str(exc)),
             )
             if remaining <= 0:
                 break
@@ -101,14 +116,24 @@ def wait_for_db(
             delay = min(delay * 2.0, 30.0)
 
     elapsed = time.monotonic() - started
-    msg = (
+    err = redact_secrets(str(last_exc))
+    log(
+        logger,
+        logging.CRITICAL,
+        "worker cannot reach the database at startup after full backoff",
+        attempt=attempt,
+        duration_ms=int(elapsed * 1000),
+        status="unreachable",
+        error=err,
+    )
+    # Non-zero exit so Cloud Run marks the task failed rather than hanging.
+    print(
         f"database unreachable after {elapsed:.1f}s "
         f"(budget={budget:.0f}s, attempts={attempt}, "
-        f"dsn={dsn_for_log(conninfo)}): {redact_secrets(str(last_exc))}"
+        f"dsn={dsn_for_log(conninfo)}): {err}",
+        file=sys.stderr,
+        flush=True,
     )
-    logger.error(msg)
-    # Non-zero exit so Cloud Run marks the task failed rather than hanging.
-    print(msg, file=sys.stderr)
     raise SystemExit(1)
 
 
@@ -146,14 +171,14 @@ def connect(*, retry: bool = True) -> psycopg.Connection:
             last_exc = exc
             elapsed = time.monotonic() - started
             remaining = budget - elapsed
-            logger.warning(
-                "database connect attempt %d failed after %.1fs "
-                "(budget=%.0fs remaining=%.1fs): %s",
-                attempt,
-                elapsed,
-                budget,
-                max(0.0, remaining),
-                redact_secrets(str(exc)),
+            log(
+                logger,
+                logging.WARNING,
+                "database connect attempt failed",
+                attempt=attempt,
+                duration_ms=int(elapsed * 1000),
+                status="retry",
+                error=redact_secrets(str(exc)),
             )
             if remaining <= 0:
                 break
@@ -186,10 +211,11 @@ def pool_kwargs() -> dict[str, Any]:
 
 def _reconnect_failed(pool: Any) -> None:
     """Log when the pool exhausts one reconnect_timeout cycle mid-run."""
-    logger.warning(
-        "psycopg pool %r reconnect_timeout=%.0fs exhausted; "
-        "starting a new reconnect cycle (dsn=%s)",
-        getattr(pool, "name", pool),
-        DB_CONNECT_TIMEOUT_S,
-        dsn_for_log(),
+    del pool
+    log(
+        logger,
+        logging.WARNING,
+        "psycopg pool reconnect_timeout exhausted; starting new cycle",
+        duration_ms=int(DB_CONNECT_TIMEOUT_S * 1000),
+        status="reconnect",
     )

@@ -44,10 +44,28 @@ SENTINEL_ARGS="-m,procrastinate,worker,-q,sentinel,-c,1,--delete-jobs,never"
 DISCOVERY_ARGS="-m,procrastinate,worker,-q,sentinel_discovery,-c,1,--delete-jobs,never"
 MAINT_ARGS="-m,procrastinate,worker,-q,maintenance,-c,1,--delete-jobs,never"
 
+# Resolved once after image is known (deploy-services builds; workers reuse IMG).
+SERVICE_VERSION="$(image_digest)"
+ok "SERVICE_VERSION=${SERVICE_VERSION}"
+
+ok "ensure signoz-ingestion-key + grant accessors"
+ensure_signoz_secret
+grant_signoz_secret_accessors
+
 worker_env() {
   local collector_source="$1"
-  printf '%s' "PROCRASTINATE_APP=collector.app.app,SENTINEL_URL=${SENTINEL_URL},RAW_BUCKET=${BUCKET},GOOGLE_CLOUD_PROJECT=${PROJECT},USE_ID_TOKEN=1,COLLECTOR_SOURCE=${collector_source}"
+  local otel_name="$2"
+  local vars="PROCRASTINATE_APP=collector.app.app,SENTINEL_URL=${SENTINEL_URL},RAW_BUCKET=${BUCKET},GOOGLE_CLOUD_PROJECT=${PROJECT},USE_ID_TOKEN=1,COLLECTOR_SOURCE=${collector_source},$(otel_env_vars "$otel_name" "$SERVICE_VERSION")"
+  # Observable gauges scrape global DB state. Only maintenance may report them
+  # — three enrichment workers each emitting the same gauge would triple-count
+  # and make every alert wrong.
+  if [[ "$collector_source" == "maintenance" ]]; then
+    vars="${vars},ENABLE_PERIODIC=1"
+  fi
+  printf '%s' "$vars"
 }
+
+WORKER_SECRETS="COLLECTOR_DSN=collector-dsn:latest,SIGNOZ_INGESTION_KEY=signoz-ingestion-key:latest"
 
 wp_deploy_cmd() {
   # Prefer GA; fall back to beta if needed.
@@ -105,8 +123,8 @@ case "$DEPLOY_SURFACE" in
       --image="$IMG" \
       --service-account="$SA_WORKER" \
       --add-cloudsql-instances="$CONN" \
-      --set-secrets="COLLECTOR_DSN=collector-dsn:latest" \
-      --set-env-vars="$(worker_env sentinel)" \
+      --set-secrets="$WORKER_SECRETS" \
+      --set-env-vars="$(worker_env sentinel lisn-worker-sentinel)" \
       --instances=3 \
       --grace-period="$GRACE_PERIOD" \
       --command=python \
@@ -123,8 +141,8 @@ case "$DEPLOY_SURFACE" in
       --image="$IMG" \
       --service-account="$SA_WORKER" \
       --add-cloudsql-instances="$CONN" \
-      --set-secrets="COLLECTOR_DSN=collector-dsn:latest" \
-      --set-env-vars="$(worker_env sentinel_discovery)" \
+      --set-secrets="$WORKER_SECRETS" \
+      --set-env-vars="$(worker_env sentinel_discovery lisn-worker-discovery)" \
       --instances=1 \
       --grace-period="$GRACE_PERIOD" \
       --command=python \
@@ -139,8 +157,8 @@ case "$DEPLOY_SURFACE" in
       --image="$IMG" \
       --service-account="$SA_WORKER" \
       --add-cloudsql-instances="$CONN" \
-      --set-secrets="COLLECTOR_DSN=collector-dsn:latest" \
-      --set-env-vars="$(worker_env maintenance)" \
+      --set-secrets="$WORKER_SECRETS" \
+      --set-env-vars="$(worker_env maintenance lisn-maintenance)" \
       --instances=1 \
       --grace-period="$GRACE_PERIOD" \
       --command=python \
@@ -201,8 +219,8 @@ case "$DEPLOY_SURFACE" in
       --image="$IMG" \
       --service-account="$SA_WORKER" \
       --set-cloudsql-instances="$CONN" \
-      --set-secrets="COLLECTOR_DSN=collector-dsn:latest" \
-      --set-env-vars="$(worker_env sentinel)" \
+      --set-secrets="$WORKER_SECRETS" \
+      --set-env-vars="$(worker_env sentinel lisn-worker-sentinel)" \
       --tasks=3 \
       --parallelism=3 \
       --task-timeout=86400s \
@@ -222,8 +240,8 @@ case "$DEPLOY_SURFACE" in
       --image="$IMG" \
       --service-account="$SA_WORKER" \
       --set-cloudsql-instances="$CONN" \
-      --set-secrets="COLLECTOR_DSN=collector-dsn:latest" \
-      --set-env-vars="$(worker_env sentinel_discovery)" \
+      --set-secrets="$WORKER_SECRETS" \
+      --set-env-vars="$(worker_env sentinel_discovery lisn-worker-discovery)" \
       --tasks=1 \
       --parallelism=1 \
       --task-timeout=86400s \
@@ -239,8 +257,8 @@ case "$DEPLOY_SURFACE" in
       --image="$IMG" \
       --service-account="$SA_WORKER" \
       --set-cloudsql-instances="$CONN" \
-      --set-secrets="COLLECTOR_DSN=collector-dsn:latest" \
-      --set-env-vars="$(worker_env maintenance)" \
+      --set-secrets="$WORKER_SECRETS" \
+      --set-env-vars="$(worker_env maintenance lisn-maintenance)" \
       --tasks=1 \
       --parallelism=1 \
       --task-timeout=86400s \

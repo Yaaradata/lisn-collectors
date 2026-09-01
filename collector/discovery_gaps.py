@@ -13,6 +13,7 @@ maybe_finalize_window):
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +21,9 @@ from typing import Any
 from uuid import UUID
 
 from collector.db import connect
+from collector.logging_setup import get_logger, log
+
+logger = get_logger(__name__)
 
 # Keep in sync with sql/011_discovery_gaps.sql (also loaded from disk when present;
 # embedded so the Cloud Run image — which copies only collector/ — still starts).
@@ -251,7 +255,18 @@ def maybe_finalize_window(request_id: str) -> str | None:
                 )
                 updated = cur.rowcount
                 conn.commit()
-                return "failed" if updated else None
+                if updated:
+                    log(
+                        logger,
+                        logging.INFO,
+                        "discovery window completed",
+                        request_id=str(request_id),
+                        source="sentinel_discovery",
+                        status="failed",
+                        record_count=id_count,
+                    )
+                    return "failed"
+                return None
             cur.execute(
                 """
                 UPDATE discovery_window
@@ -265,7 +280,18 @@ def maybe_finalize_window(request_id: str) -> str | None:
             )
             updated = cur.rowcount
             conn.commit()
-            return "complete" if updated else None
+            if updated:
+                log(
+                    logger,
+                    logging.INFO,
+                    "discovery window completed",
+                    request_id=str(request_id),
+                    source="sentinel_discovery",
+                    status="complete",
+                    record_count=id_count,
+                )
+                return "complete"
+            return None
 
 
 def mark_window_complete(request_id: str) -> None:

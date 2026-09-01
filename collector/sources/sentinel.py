@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 from collector.contract import MalformedSourcePayload, Page, RawResponse, Record
 from collector.http import get_client
+from collector.metrics import record_source_call, record_source_latency
+from collector.tracing import traced_span, url_host
 
 # Identifiers at incident grain / join keys. Must stay strings end-to-end —
 # float/int coercion above 2^53 silently mutates the key.
@@ -119,11 +122,40 @@ class SentinelCollector:
         # a Cloud Run service needs the same ID-token behaviour.
         base = os.environ["SENTINEL_URL"].rstrip("/")
         url = f"{base}/v1/incidents/search"
-        with get_client(base) as client:
-            response = client.post(url, json=page.payload, timeout=30.0)
-        response.raise_for_status()
-        content_type = response.headers.get("content-type", "application/json")
-        return RawResponse(body=response.content, content_type=content_type)
+        host = url_host(url)
+        with traced_span(
+            "source_fetch",
+            attributes={"source.url_host": host},
+        ) as span:
+            t0 = time.perf_counter()
+            try:
+                with get_client(base) as client:
+                    response = client.post(url, json=page.payload, timeout=30.0)
+                record_source_call(
+                    source=self.name, http_status=response.status_code
+                )
+                record_source_latency(
+                    source=self.name,
+                    duration_ms=(time.perf_counter() - t0) * 1000.0,
+                )
+            except Exception:
+                # Transport failure — still count toward the rate ceiling.
+                record_source_call(source=self.name, http_status=0)
+                record_source_latency(
+                    source=self.name,
+                    duration_ms=(time.perf_counter() - t0) * 1000.0,
+                )
+                raise
+            span.set_attribute("http.status_code", response.status_code)
+            span.set_attribute("http.response_content_length", len(response.content))
+            response.raise_for_status()
+            content_type = response.headers.get("content-type", "application/json")
+            return RawResponse(
+                body=response.content,
+                content_type=content_type,
+                http_status_code=response.status_code,
+                url_host=host,
+            )
 
     def parse(self, raw: RawResponse, page: Page) -> list[Record]:
         # Shape checks belong HERE, not in fetch(). fetch() returns raw bytes
