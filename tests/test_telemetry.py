@@ -54,3 +54,22 @@ def test_shutdown_telemetry_is_idempotent(monkeypatch) -> None:
     tel.shutdown_telemetry()
     tel.shutdown_telemetry()  # second call no-ops
     assert tel._shutdown_done is True
+
+
+def test_logs_http_endpoint_from_grpc_host(monkeypatch) -> None:
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", raising=False)
+    assert (
+        telemetry._logs_http_endpoint("ingest.us2.signoz.cloud:443")
+        == "https://ingest.us2.signoz.cloud/v1/logs"
+    )
+
+
+def test_logs_http_endpoint_explicit_override(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+        "https://custom.example/v1/logs",
+    )
+    assert (
+        telemetry._logs_http_endpoint("ingest.us2.signoz.cloud:443")
+        == "https://custom.example/v1/logs"
+    )

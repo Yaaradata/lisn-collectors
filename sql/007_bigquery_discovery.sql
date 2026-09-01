@@ -1,7 +1,7 @@
 -- BigQuery discovery landing table + latest view.
 -- Applied by scripts/08_bigquery.sh sentinel_discovery (substitutes __PROJECT__).
 --
--- Same append-only-plus-view pattern as sentinel_raw.incidents.
+-- Same append-only-plus-view pattern as sentinel_raw.incidents_v2.
 -- A discovery run at 09:00 and another at 09:30 both accumulate; the view
 -- gives the current set (one row per incident_id).
 

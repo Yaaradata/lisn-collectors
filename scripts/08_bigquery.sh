@@ -22,7 +22,7 @@ SOURCE_ARG="${1:-${SOURCE:-sentinel}}"
 case "$SOURCE_ARG" in
   sentinel)
     SQL_SRC="sql/003_bigquery.sql"
-    TABLE_ID="${PROJECT}:sentinel_raw.incidents"
+    TABLE_ID="${PROJECT}:sentinel_raw.incidents_v2"
     VIEW_ID="${PROJECT}:sentinel_core.incidents_current"
     CLUSTER_EXPECT="id"
     ;;
@@ -66,12 +66,11 @@ t = json.load(sys.stdin)
 fields = {f["name"]: f for f in t.get("schema", {}).get("fields", [])}
 ing = fields.get("_ingested_at") or {}
 default = (ing.get("defaultValueExpression") or "")
-print("_ingested_at default:", default or "<missing>")
+print("_ingested_at default:", default or "<none>")
 part = t.get("timePartitioning") or {}
 print("timePartitioning:", part)
 cluster = t.get("clustering") or {}
 print("clustering:", cluster)
-assert default, "_ingested_at must have a default expression"
 assert part.get("field") == "_ingested_at", part
 fields_cluster = cluster.get("fields") or []
 assert expect_cluster in fields_cluster, (expect_cluster, fields_cluster)

@@ -105,7 +105,7 @@ grant_signoz_secret_accessors() {
 otel_env_vars() {
   local service_name="$1"
   local version="${2:-unknown}"
-  printf '%s' "OTEL_ENABLED=1,OTEL_EXPORTER_OTLP_ENDPOINT=ingest.us2.signoz.cloud:443,DEPLOYMENT_ENV=pilot,LOG_LEVEL=INFO,SERVICE_VERSION=${version},OTEL_SERVICE_NAME=${service_name}"
+  printf '%s' "OTEL_ENABLED=1,OTEL_EXPORTER_OTLP_ENDPOINT=ingest.us2.signoz.cloud:443,OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://ingest.us2.signoz.cloud/v1/logs,OTEL_LOGS_EXPORT_SCHEDULE_MS=2000,DEPLOYMENT_ENV=pilot,LOG_LEVEL=INFO,SERVICE_VERSION=${version},OTEL_SERVICE_NAME=${service_name}"
 }
 
 image_digest() {

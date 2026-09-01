@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS discovery_window (
   started_at    timestamptz NOT NULL DEFAULT now(),
   completed_at  timestamptz,
   CHECK (window_from < window_to),
-  CHECK (status IN ('running', 'complete', 'failed')),
+  CHECK (status IN ('running', 'complete', 'partial', 'failed')),
   CHECK (window_field IN ('updated_on', 'created_at'))
 );
 
@@ -86,7 +86,7 @@ BEGIN
   ALTER TABLE discovery_window
     ADD CONSTRAINT discovery_window_from_before_to CHECK (window_from < window_to),
     ADD CONSTRAINT discovery_window_status_check
-      CHECK (status IN ('running', 'complete', 'failed')),
+      CHECK (status IN ('running', 'complete', 'partial', 'failed')),
     ADD CONSTRAINT discovery_window_field_check
       CHECK (window_field IN ('updated_on', 'created_at'));
 END

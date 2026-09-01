@@ -1,4 +1,4 @@
-"""OpenTelemetry foundation — export traces/logs/metrics to SigNoz over OTLP/gRPC.
+"""OpenTelemetry foundation — traces/metrics over OTLP/gRPC; logs over OTLP/HTTP.
 
 FAIL OPEN (do not "improve" this by raising):
   If SigNoz is unreachable, slow, or the ingestion key is wrong, the collector
@@ -49,6 +49,24 @@ def _service_name() -> str:
         return explicit
     source = os.environ.get("COLLECTOR_SOURCE", "local")
     return f"lisn-{source}"
+
+
+def _logs_http_endpoint(endpoint: str) -> str:
+    """OTLP/HTTP logs URL for SigNoz Cloud.
+
+    Traces and metrics stay on gRPC (host:port). Logs use HTTPS /v1/logs —
+    more reliable cross-region than gRPC log export on SigNoz Cloud.
+    """
+    explicit = os.environ.get("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "").strip()
+    if explicit:
+        return explicit
+    if endpoint.startswith("http://") or endpoint.startswith("https://"):
+        base = endpoint.rstrip("/")
+        if base.endswith("/v1/logs"):
+            return base
+        return f"{base}/v1/logs"
+    host = endpoint.split(":")[0]
+    return f"https://{host}/v1/logs"
 
 
 def shutdown_telemetry(signum: int | None = None, frame: object | None = None) -> None:
@@ -162,7 +180,7 @@ def _configure() -> None:
     from opentelemetry import metrics as metrics_api
     from opentelemetry import trace
     from opentelemetry._logs import set_logger_provider
-    from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
+    from opentelemetry.exporter.otlp.proto.http._log_exporter import (
         OTLPLogExporter,
     )
     from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
@@ -266,19 +284,27 @@ def _configure() -> None:
     # also registered them would triple-count global DB state.
     register_observable_gauges()
 
-    # --- Logs ---
+    # --- Logs (OTLP/HTTP — separate from gRPC traces/metrics) ---
+    logs_endpoint = _logs_http_endpoint(endpoint)
+    logs_schedule_ms = int(
+        os.environ.get("OTEL_LOGS_EXPORT_SCHEDULE_MS", "2000")
+    )
     logger_provider = LoggerProvider(resource=resource)
     set_logger_provider(logger_provider)
     _logger_provider = logger_provider
     log_exporter = OTLPLogExporter(
-        endpoint=endpoint,
+        endpoint=logs_endpoint,
         headers=otlp_headers,
-        insecure=False,
         timeout=otlp_timeout_s,
     )
     # BatchLogRecordProcessor, not Simple — same reason as spans.
+    # Short schedule_delay so lifecycle logs show in SigNoz within seconds.
     logger_provider.add_log_record_processor(
-        BatchLogRecordProcessor(log_exporter)
+        BatchLogRecordProcessor(
+            log_exporter,
+            schedule_delay_millis=logs_schedule_ms,
+            export_timeout_millis=int(otlp_timeout_s * 1000),
+        )
     )
     # Export stdlib logging through OTLP; LoggingInstrumentor below injects
     # trace_id / span_id onto LogRecord so JsonFormatter can link logs ↔ traces.
@@ -308,4 +334,6 @@ def _configure() -> None:
         status="otel_ready",
         service=attrs["service.name"],
         endpoint=endpoint,
+        logs_endpoint=logs_endpoint,
+        logs_schedule_ms=logs_schedule_ms,
     )

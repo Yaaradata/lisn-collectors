@@ -15,6 +15,10 @@
 -- keeps its corrupted FLOAT64 values; we do NOT copy from it — casting a
 -- rounded float back to STRING preserves the rounding. Backfill comes from GCS.
 --
+-- Greenfield installs: sql/003_bigquery.sql now creates incidents_v2 and the
+-- serving view. This file remains for the GCS backfill recovery path
+-- (scripts/36_backfill_ids.py) on instances that still have the old table.
+--
 -- This file only CREATES incidents_v2. It does not switch the serving view —
 -- that happens at swap time in scripts/36_backfill_ids.py --swap, after
 -- reconcile, so a half-filled v2 never becomes the live table.

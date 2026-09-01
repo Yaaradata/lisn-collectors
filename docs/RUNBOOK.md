@@ -1,5 +1,32 @@
 # Collectors runbook
 
+## Local database access
+
+Laptop connections use the Cloud SQL instance **public IP** over authorised
+networks. They do **not** require `cloud-sql-proxy`. `.env` `COLLECTOR_DSN` /
+`SENTINEL_MOCK_DSN` point at that IP with `?sslmode=require`.
+
+When your public IP changes (different network, VPN on/off), connections
+**time out**. The symptom is a timeout, not a permission error, which is
+misleading. Fix by re-authorising your current IP:
+
+```bash
+MYIP=$(curl -s https://api.ipify.org)
+# WARNING: --authorized-networks REPLACES the entire list. Include every
+# entry that should remain, comma-separated, or you will cut off anyone else.
+gcloud sql instances patch lisn-collector-db --authorized-networks="$MYIP/32"
+```
+
+The Cloud SQL Auth Proxy remains available as an alternative (commented
+proxy-form DSNs in `.env`). It does not care about IP changes, but needs
+`gcloud auth application-default login` refreshed periodically. An expired
+ADC shows as `invalid_rapt` in the proxy output.
+
+Cloud Run is unaffected by any of this. Secret Manager `collector-dsn` and
+`sentinel-mock-dsn` keep the `/cloudsql/<CONNECTION_NAME>` socket form — the
+only shape that works with the Cloud SQL connector on Cloud Run. Direct IP
+in those secrets would break every deployed service and worker.
+
 ## Seeding `sentinel_mock`
 
 Single path: `python -m mock.seed_sentinel` / `make seed`.

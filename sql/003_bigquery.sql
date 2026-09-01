@@ -1,10 +1,17 @@
--- BigQuery landing table + current view for Sentinel.
+-- BigQuery landing table + current view for Sentinel enrichment.
 -- Applied by scripts/08_bigquery.sh (substitutes __PROJECT__).
 --
 -- Append-only. Fetch the same incident three times and there are three rows.
 -- This is the evidence store — proof of what a query returned and when.
+--
+-- Landing table is incidents_v2, not incidents. The original sentinel_raw.incidents
+-- used FLOAT64 for orderItemId, orderItemUnitId and threads_communicationId, which
+-- silently mutated identifiers above 2^53. BigQuery cannot ALTER FLOAT64 → STRING,
+-- so recovery required a new table rebuilt from the GCS raw zone (see
+-- sql/013_migrate_id_columns.sql and scripts/36_backfill_ids.py). The old table
+-- has been dropped; v2 is the permanent landing table until a deliberate rename.
 
-CREATE TABLE IF NOT EXISTS `__PROJECT__.sentinel_raw.incidents` (
+CREATE TABLE IF NOT EXISTS `__PROJECT__.sentinel_raw.incidents_v2` (
   id STRING NOT NULL,
   issue_id INT64,
   issue_name STRING,
@@ -43,12 +50,12 @@ CREATE TABLE IF NOT EXISTS `__PROJECT__.sentinel_raw.incidents` (
   _request_id STRING NOT NULL,
   _page_no INT64 NOT NULL,
   _raw_uri STRING NOT NULL,
-  _ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+  _ingested_at TIMESTAMP
 )
 PARTITION BY DATE(_ingested_at)
 CLUSTER BY id, trackingId
 OPTIONS (
-  description = "Append-only Sentinel raw landing — evidence of what each query returned and when"
+  description = "Append-only Sentinel raw landing (STRING identifiers) — collector write target"
 );
 
 -- This view is where the merge happens. It replaces the per-page upsert we
@@ -67,6 +74,6 @@ FROM (
       PARTITION BY id, threads_id
       ORDER BY updatedOn DESC, _ingested_at DESC
     ) AS rn
-  FROM `__PROJECT__.sentinel_raw.incidents`
+  FROM `__PROJECT__.sentinel_raw.incidents_v2`
 )
 WHERE rn = 1;

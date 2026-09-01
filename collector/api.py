@@ -51,9 +51,11 @@ from collector.db import connect
 from collector.discovery_gaps import (
     axes_from_query_spec,
     check_submit_contiguity,
+    estimate_truncation_risk,
     gap_summary,
     insert_discovery_windows,
     list_gaps,
+    partial_windows_summary,
 )
 from collector.logging_setup import get_logger, log
 from collector.metrics import record_request_pages, record_request_received
@@ -289,6 +291,7 @@ def _query_spec_dict(query: SentinelKeyQuery | DiscoveryQuery) -> dict[str, Any]
 def collect(body: CollectBody) -> dict[str, Any]:
     query_spec = _query_spec_dict(body.query_spec)
     overlap_warnings: list[str] = []
+    truncation_warnings: list[dict[str, Any]] = []
 
     # Discovery submit-time contiguity guard — before plan/insert.
     if body.source == "sentinel_discovery":
@@ -348,6 +351,11 @@ def collect(body: CollectBody) -> dict[str, Any]:
                     source=body.source,
                     status="overlap",
                 )
+            risk = estimate_truncation_risk(
+                source=body.source, axis=axis, query_spec=query_spec
+            )
+            if risk is not None:
+                truncation_warnings.append(risk)
 
     key_type, key_count = key_type_and_count(query_spec, body.source)
     with traced_span(
@@ -479,6 +487,8 @@ def collect(body: CollectBody) -> dict[str, Any]:
         }
         if overlap_warnings:
             out["warnings"] = overlap_warnings
+        if truncation_warnings:
+            out["truncation_warnings"] = truncation_warnings
         if body.allow_gap and body.source == "sentinel_discovery":
             out["allow_gap"] = True
             out["gap_reason"] = body.gap_reason
@@ -854,14 +864,14 @@ def dead_letter() -> dict[str, Any]:
 
 @api.get(
     "/v1/discovery/gaps",
-    summary="Contiguity gaps between completed discovery windows",
+    summary="Coverage gaps between discovery windows",
     description=(
-        "Lists ranges where completed discovery windows are not contiguous "
-        "(sql/011_discovery_gaps.sql). Failed and running windows are excluded "
-        "from the chain so a failed window surfaces as a gap — intentional. "
-        "This endpoint REPORTS gaps only; it does not collect or backfill them. "
-        "Deciding to backfill is a scheduling decision and belongs with LiSN — "
-        "gaps do not self-heal."
+        "Lists ranges where discovery coverage is incomplete "
+        "(sql/011_discovery_gaps.sql). Boundary gaps (reason=not_scheduled) are "
+        "holes between completed windows. Truncated gaps (reason=truncated, "
+        "uncertain=true) are partial windows that stopped at the ID cap. Failed "
+        "and running windows are excluded from the boundary chain. "
+        "This endpoint REPORTS gaps only; it does not collect or backfill them."
     ),
 )
 def discovery_gaps(
@@ -998,6 +1008,7 @@ def health_detail() -> dict[str, Any]:
     # skipped windows lost incidents. This is the specific thing the gap
     # ledger exists to change. Gaps are anomalies to surface — not auto-healed.
     discovery = gap_summary()
+    partial = partial_windows_summary()
 
     return {
         "counts": by_source_status,
@@ -1009,6 +1020,7 @@ def health_detail() -> dict[str, Any]:
         "dead": dead,
         "shortfall_pages": shortfall_pages,
         "discovery_gaps": discovery,
+        "partial_windows": partial,
     }
 
 

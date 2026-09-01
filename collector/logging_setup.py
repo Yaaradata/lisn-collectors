@@ -210,20 +210,24 @@ def _quiet_third_party() -> None:
     ):
         logging.getLogger(name).setLevel(logging.WARNING)
 
-    # OTLP export failures still matter, but at most one line per minute —
-    # BatchSpanProcessor otherwise floods Cloud Logging on a blip.
+    # Trace/metric gRPC export retries are noisy at INFO — cap at ERROR, once/min.
     for name in (
         "opentelemetry.exporter.otlp.proto.grpc.trace_exporter",
         "opentelemetry.exporter.otlp.proto.grpc.metric_exporter",
-        "opentelemetry.exporter.otlp.proto.grpc._log_exporter",
         "opentelemetry.sdk.trace.export",
         "opentelemetry.sdk.metrics.export",
-        "opentelemetry.sdk._logs.export",
     ):
         lg = logging.getLogger(name)
         lg.setLevel(logging.ERROR)
         if not any(isinstance(f, _RateLimitFilter) for f in lg.filters):
             lg.addFilter(_RateLimitFilter(interval_s=60.0))
+
+    # Log export (OTLP/HTTP) failures must be visible — WARNING, not suppressed.
+    for name in (
+        "opentelemetry.exporter.otlp.proto.http._log_exporter",
+        "opentelemetry.sdk._logs.export",
+    ):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 class _RateLimitFilter(logging.Filter):
