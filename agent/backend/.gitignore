@@ -1,0 +1,14 @@
+# Local verify / scratch output — not evidence
+tmp_tool_verify/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets
+.env
+.env.*
+!.env.example

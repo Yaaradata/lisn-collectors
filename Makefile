@@ -1,4 +1,4 @@
-.PHONY: preflight database storage iam registry smoke all trace clean mock-schema mock-schema-verify seed seed-verify mock-run mock-test image deploy-mock collector-schema collector-schema-verify procrastinate-schema-read procrastinate-schema-apply procrastinate-verify test-source test-raw worker api frontend bigquery e2e sweeper sweep-now pause resume drain ks-status failure-demos demo trace-s4 deploy-preflight grant-invoker grant-admin-reset deploy-services deploy-workers workers-start workers-stop workers-restart workers-status workers-logs workers-scale e2e-cloud measure-rate demo-cloud trace-s5 reset two-stage-demo reset-api reset-api-force
+.PHONY: preflight database storage iam registry smoke all trace clean mock-schema mock-schema-verify seed seed-verify mock-run mock-test image deploy-mock collector-schema collector-schema-verify procrastinate-schema-read procrastinate-schema-apply procrastinate-verify test-source test-raw worker api frontend bigquery e2e sweeper sweep-now pause resume drain ks-status failure-demos demo trace-s4 deploy-preflight grant-invoker grant-admin-reset deploy-services deploy-workers deploy-agent deploy-agent-frontend workers-start workers-stop workers-restart workers-status workers-logs workers-scale e2e-cloud measure-rate demo-cloud trace-s5 reset two-stage-demo reset-api reset-api-force
 
 preflight:
 	@bash scripts/00_preflight.sh
@@ -52,6 +52,12 @@ deploy-services:
 
 deploy-workers:
 	@bash scripts/27_deploy_workers.sh
+
+deploy-agent:
+	@bash scripts/deploy_agent.sh
+
+deploy-agent-frontend:
+	@bash scripts/deploy_agent_frontend.sh
 
 workers-start:
 	@bash scripts/28_workers_control.sh start $(SOURCE)
